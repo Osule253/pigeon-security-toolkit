@@ -1,0 +1,2 @@
+# PST 1.9.1 core uses Python standard-library modules.
+# No third-party packages are currently required by the main CLI.

@@ -1,0 +1,28 @@
+__pycache__/
+*.py[cod]
+*.log
+.venv/
+venv/
+.env
+*.bak
+
+# Generated security reports
+pigeon-assessment*.json
+pigeon-assessment*.html
+pigeon-website-audit.json
+pigeon-ssl-report.json
+pigeon-scan.json
+pigeon-report.html
+pigeon-comparison.json
+pigeon-test.json
+pigeon_scan_history.jsonl
+
+# Local development and old versions
+install_pst19.py
+install_pst191.py
+pst_v*.py
+pigeon_portscan_v*.py
+test.txt
+
+# Legacy package, not part of PST 1.9.1
+pst/
