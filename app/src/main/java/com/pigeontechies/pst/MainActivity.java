@@ -1,6 +1,11 @@
 package com.pigeontechies.pst;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
+import android.os.Environment;
+import android.provider.Settings;
 import android.os.Bundle;
 import android.content.Intent;
 import android.net.Uri;
@@ -10,6 +15,9 @@ import android.view.Gravity;
 import android.view.View;
 import android.widget.*;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.net.URL;
 import java.net.InetAddress;
 import java.net.HttpURLConnection;
@@ -19,6 +27,8 @@ import java.security.cert.X509Certificate;
 import javax.net.ssl.HttpsURLConnection;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import org.json.JSONObject;
+import androidx.core.content.FileProvider;
 
 public class MainActivity extends Activity {
 
@@ -26,6 +36,14 @@ public class MainActivity extends Activity {
     private EditText domainInput;
     private TextView output;
     private ExecutorService executor = Executors.newSingleThreadExecutor();
+
+    private static final String UPDATE_MANIFEST_URL =
+        "https://raw.githubusercontent.com/Osule253/pigeon-security-toolkit/main/pst-update.json";
+
+    private TextView versionLabel;
+    private TextView updateStatus;
+    private boolean updateCheckInProgress = false;
+    private File pendingUpdateFile;
 
     private final int BG = Color.rgb(12, 12, 12);
     private final int PANEL = Color.rgb(28, 28, 28);
@@ -35,6 +53,16 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         buildInterface();
+        checkForUpdates(false);
+    }
+
+    private String getAppVersion() {
+        try {
+            PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+            return info.versionName;
+        } catch (Exception e) {
+            return "Unknown";
+        }
     }
 
     private void buildInterface() {
@@ -63,11 +91,11 @@ public class MainActivity extends Activity {
         title.setPadding(0, 18, 0, 5);
         root.addView(title);
 
-        TextView version = new TextView(this);
-        version.setText("ANDROID EDITION  •  VERSION 1.0.0");
-        version.setTextColor(SILVER);
-        version.setTextSize(11);
-        root.addView(version);
+        versionLabel = new TextView(this);
+        versionLabel.setText("ANDROID EDITION  •  VERSION " + getAppVersion());
+        versionLabel.setTextColor(SILVER);
+        versionLabel.setTextSize(11);
+        root.addView(versionLabel);
 
         TextView status = new TextView(this);
         status.setText("SECURE. INSPECT. DEFEND.");
@@ -94,6 +122,18 @@ public class MainActivity extends Activity {
         section("FILE SECURITY");
         addButton("SELECT FILE & CALCULATE SHA-256", v -> chooseFile());
 
+        section("SOFTWARE UPDATES");
+
+        updateStatus = new TextView(this);
+        updateStatus.setText("Checking for updates will be available here.");
+        updateStatus.setTextColor(SILVER);
+        updateStatus.setTextSize(12);
+        updateStatus.setPadding(12, 14, 12, 14);
+        updateStatus.setBackgroundColor(PANEL);
+        root.addView(updateStatus);
+
+        addButton("CHECK FOR UPDATES", v -> checkForUpdates(true));
+
         section("SCAN RESULTS");
 
         output = new TextView(this);
@@ -111,6 +151,225 @@ public class MainActivity extends Activity {
         footer.setGravity(Gravity.CENTER);
         footer.setPadding(0, 30, 0, 10);
         root.addView(footer);
+    }
+
+
+    private void checkForUpdates(boolean manual) {
+        if (updateCheckInProgress) return;
+
+        updateCheckInProgress = true;
+        updateStatus.setText("Checking for updates...");
+
+        executor.execute(() -> {
+            HttpURLConnection connection = null;
+
+            try {
+                URL url = new URL(UPDATE_MANIFEST_URL);
+                connection = (HttpURLConnection) url.openConnection();
+                connection.setConnectTimeout(15000);
+                connection.setReadTimeout(15000);
+                connection.setRequestMethod("GET");
+                connection.setRequestProperty("User-Agent", "PST-Android-Updater");
+
+                if (connection.getResponseCode() != 200) {
+                    throw new Exception("Update server returned HTTP " +
+                        connection.getResponseCode());
+                }
+
+                StringBuilder body = new StringBuilder();
+                try (InputStream input = connection.getInputStream()) {
+                    byte[] buffer = new byte[4096];
+                    int count;
+                    while ((count = input.read(buffer)) != -1) {
+                        body.append(new String(buffer, 0, count,
+                            java.nio.charset.StandardCharsets.UTF_8));
+                    }
+                }
+
+                JSONObject metadata = new JSONObject(body.toString());
+                int latestCode = metadata.getInt("versionCode");
+                String latestName = metadata.getString("versionName");
+                String apkUrl = metadata.getString("apkUrl");
+                String checksum = metadata.getString("sha256");
+                String notes = metadata.optString("releaseNotes", "No release notes.");
+
+                PackageInfo installed = getPackageManager()
+                    .getPackageInfo(getPackageName(), 0);
+
+                int currentCode = installed.versionCode;
+
+                if (latestCode <= currentCode) {
+                    runOnUiThread(() -> {
+                        updateStatus.setText("PST is up to date. Version " +
+                            getAppVersion());
+                        updateCheckInProgress = false;
+                    });
+                    return;
+                }
+
+                runOnUiThread(() -> {
+                    updateStatus.setText("Update available: " + latestName);
+                    new AlertDialog.Builder(this)
+                        .setTitle("PST update available")
+                        .setMessage("Version " + latestName + "\n\n" + notes +
+                            "\n\nDownload and verify this update?")
+                        .setNegativeButton("Later", (dialog, which) -> {})
+                        .setPositiveButton("Download", (dialog, which) ->
+                            downloadUpdate(apkUrl, checksum))
+                        .show();
+                    updateCheckInProgress = false;
+                });
+
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    updateStatus.setText("Update check failed: " + e.getMessage());
+                    updateCheckInProgress = false;
+                });
+            } finally {
+                if (connection != null) connection.disconnect();
+            }
+        });
+    }
+
+
+    private void downloadUpdate(String apkUrl, String expectedSha256) {
+        if (apkUrl == null || !apkUrl.startsWith("https://github.com/Osule253/pigeon-security-toolkit/releases/download/") ||
+            expectedSha256 == null ||
+            !expectedSha256.matches("(?i)[a-f0-9]{64}")) {
+            updateStatus.setText("Rejected: Invalid update URL or checksum.");
+            return;
+        }
+
+        updateStatus.setText("Downloading update...");
+
+        executor.execute(() -> {
+            HttpURLConnection connection = null;
+            File apkFile = null;
+
+            try {
+                connection = (HttpURLConnection)
+                    new URL(apkUrl).openConnection();
+                connection.setConnectTimeout(20000);
+                connection.setReadTimeout(30000);
+                connection.setInstanceFollowRedirects(true);
+
+                int responseCode = connection.getResponseCode();
+
+                if (responseCode != 200) {
+                    throw new Exception("Download failed: HTTP " + responseCode);
+                }
+
+                URL finalUrl = connection.getURL();
+                String finalHost = finalUrl.getHost();
+
+                if (!"https".equalsIgnoreCase(finalUrl.getProtocol()) ||
+                    !(finalHost.equalsIgnoreCase("github.com") ||
+                      finalHost.equalsIgnoreCase("release-assets.githubusercontent.com"))) {
+                    throw new Exception("Untrusted download destination.");
+                }
+
+                File directory = getExternalFilesDir(
+                    Environment.DIRECTORY_DOWNLOADS);
+
+                if (directory == null) {
+                    throw new Exception("Download directory unavailable.");
+                }
+
+                if (!directory.exists() && !directory.mkdirs()) {
+                    throw new Exception("Cannot create download directory.");
+                }
+
+                apkFile = new File(directory, "pst-update.apk");
+                MessageDigest digest = MessageDigest.getInstance("SHA-256");
+                byte[] buffer = new byte[8192];
+                long total = 0;
+
+                try (InputStream input = connection.getInputStream();
+                     OutputStream outputStream =
+                         new FileOutputStream(apkFile)) {
+                    int count;
+
+                    while ((count = input.read(buffer)) != -1) {
+                        total += count;
+
+                        if (total > 100L * 1024 * 1024) {
+                            throw new Exception("APK exceeds 100 MB.");
+                        }
+
+                        digest.update(buffer, 0, count);
+                        outputStream.write(buffer, 0, count);
+                    }
+                }
+
+                StringBuilder hash = new StringBuilder();
+
+                for (byte b : digest.digest()) {
+                    hash.append(String.format("%02x", b & 0xff));
+                }
+
+                if (!hash.toString().equalsIgnoreCase(expectedSha256)) {
+                    throw new Exception("SHA-256 verification failed.");
+                }
+
+                File verifiedFile = apkFile;
+                pendingUpdateFile = verifiedFile;
+
+                runOnUiThread(() -> {
+                    updateStatus.setText("Download verified.");
+                    installUpdate(verifiedFile);
+                });
+
+            } catch (Exception e) {
+                if (apkFile != null) apkFile.delete();
+
+                runOnUiThread(() ->
+                    updateStatus.setText("UPDATE FAILED: " + e.getMessage()));
+            } finally {
+                if (connection != null) connection.disconnect();
+            }
+        });
+    }
+
+    private void installUpdate(File apkFile) {
+        try {
+            if (apkFile == null || !apkFile.isFile()) {
+                throw new Exception("Update APK not found.");
+            }
+
+            if (android.os.Build.VERSION.SDK_INT >= 26 &&
+                !getPackageManager().canRequestPackageInstalls()) {
+
+                updateStatus.setText(
+                    "Allow PST to install updates, then return.");
+
+                Intent settingsIntent = new Intent(
+                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:" + getPackageName()));
+
+                startActivityForResult(settingsIntent, 102);
+                return;
+            }
+
+            Uri apkUri = FileProvider.getUriForFile(
+                this,
+                getPackageName() + ".fileprovider",
+                apkFile);
+
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setDataAndType(
+                apkUri,
+                "application/vnd.android.package-archive");
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+            startActivity(intent);
+
+            updateStatus.setText(
+                "Android installer opened. Approve the update there.");
+
+        } catch (Exception e) {
+            updateStatus.setText(
+                "INSTALLATION ERROR: " + e.getMessage());
+        }
     }
 
     private void section(String name) {
@@ -280,6 +539,16 @@ public class MainActivity extends Activity {
         int requestCode, int resultCode, Intent data
     ) {
         super.onActivityResult(requestCode, resultCode, data);
+
+        if (requestCode == 102) {
+            if (android.os.Build.VERSION.SDK_INT < 26 ||
+                getPackageManager().canRequestPackageInstalls()) {
+                installUpdate(pendingUpdateFile);
+            } else {
+                updateStatus.setText("Installation permission not granted.");
+            }
+            return;
+        }
 
         if (requestCode == 101 && resultCode == RESULT_OK && data != null) {
             Uri uri = data.getData();
