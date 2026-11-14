@@ -5,6 +5,7 @@
     <application
         android:allowBackup="false"
         android:label="Pigeon Security Toolkit"
+        android:icon="@mipmap/ic_launcher"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:usesCleartextTraffic="false">
 
