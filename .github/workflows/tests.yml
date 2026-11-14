@@ -1,0 +1,39 @@
+name: PST Cross-Platform Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Compile PST modules
+        run: python -m py_compile pst.py pigeon_portscan.py pigeon_history.py
+
+      - name: Run command-line tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Verify version command
+        run: python pst.py --version
+
+      - name: Verify help command
+        run: python pst.py --help
