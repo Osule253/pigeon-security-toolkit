@@ -1,4 +1,4 @@
-name: Build PST Android APK
+name: Build PST Signed Android APK
 
 on:
   workflow_dispatch:
@@ -39,12 +39,28 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build Android APK
-        run: gradle assembleDebug
+      - name: Decode release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.PST_KEYSTORE_BASE64 }}
+        run: |
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/pst-release-key.p12"
+          chmod 600 "$RUNNER_TEMP/pst-release-key.p12"
 
-      - name: Upload APK
+      - name: Build signed release APK
+        env:
+          PST_KEYSTORE_PATH: ${{ runner.temp }}/pst-release-key.p12
+          PST_KEYSTORE_PASSWORD: ${{ secrets.PST_KEYSTORE_PASSWORD }}
+          PST_KEY_ALIAS: ${{ secrets.PST_KEY_ALIAS }}
+          PST_KEY_PASSWORD: ${{ secrets.PST_KEY_PASSWORD }}
+        run: gradle assembleRelease
+
+      - name: Verify APK signature
+        run: |
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose app/build/outputs/apk/release/app-release.apk
+
+      - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
-          name: Pigeon-Security-Toolkit-Android
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: Pigeon-Security-Toolkit-Release
+          path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error

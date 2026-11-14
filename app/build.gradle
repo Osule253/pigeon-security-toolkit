@@ -14,6 +14,22 @@ android {
         versionName '1.0.0'
     }
 
+    signingConfigs {
+        release {
+            storeFile file(providers.environmentVariable('PST_KEYSTORE_PATH').getOrElse('release-key.p12'))
+            storePassword providers.environmentVariable('PST_KEYSTORE_PASSWORD').getOrElse('')
+            keyAlias providers.environmentVariable('PST_KEY_ALIAS').getOrElse('')
+            keyPassword providers.environmentVariable('PST_KEY_PASSWORD').getOrElse('')
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig signingConfigs.release
+            minifyEnabled false
+        }
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
