@@ -17,6 +17,7 @@ android {
     signingConfigs {
         release {
             storeFile file(providers.environmentVariable('PST_KEYSTORE_PATH').getOrElse('release-key.p12'))
+            storeType 'PKCS12'
             storePassword providers.environmentVariable('PST_KEYSTORE_PASSWORD').getOrElse('')
             keyAlias providers.environmentVariable('PST_KEY_ALIAS').getOrElse('')
             keyPassword providers.environmentVariable('PST_KEY_PASSWORD').getOrElse('')
