@@ -37,3 +37,27 @@ jobs:
 
       - name: Verify help command
         run: python pst.py --help
+
+      - name: Test Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & .\install-windows.ps1
+
+          $Launcher = Join-Path $env:LOCALAPPDATA "Programs\PST\pst.cmd"
+
+          if (-not (Test-Path $Launcher)) {
+              throw "PST launcher was not created."
+          }
+
+          $Output = & $Launcher --version
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "PST launcher failed."
+          }
+
+          if (($Output -join "`n") -notmatch 'PST\s+\d+\.\d+') {
+              throw "PST version output was not detected."
+          }
+
+          Write-Host "Windows installer test passed."
