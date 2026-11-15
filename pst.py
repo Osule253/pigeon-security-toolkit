@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import sys
+import uuid
 import ssl
 import re
 import json
@@ -259,12 +260,82 @@ def validate_url(url):
     return url
 
 
-def add_finding(findings, severity, issue, detail):
-    findings.append({
+def add_finding(
+    findings,
+    severity,
+    issue,
+    detail,
+    module="website",
+    recommendation=""
+):
+    severity = str(severity).strip().upper()
+
+    allowed = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"}
+
+    if severity not in allowed:
+        raise ValueError(f"Invalid finding severity: {severity}")
+
+    if not str(issue).strip():
+        raise ValueError("Finding issue cannot be empty.")
+
+    finding = {
+        "id": "PST-F-" + uuid.uuid4().hex[:12].upper(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "module": str(module).strip() or "website",
         "severity": severity,
-        "issue": issue,
-        "detail": detail
-    })
+        "issue": str(issue).strip(),
+        "detail": str(detail),
+        "recommendation": str(recommendation)
+    }
+
+    findings.append(finding)
+    return finding
+
+
+def normalize_assessment_findings(findings):
+    allowed = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"}
+    counts = {level: 0 for level in allowed}
+    used_ids = set()
+
+    for item in findings:
+        original_id = str(item.get("id", "")).strip()
+
+        valid_id = (
+            len(original_id) == 18
+            and original_id.startswith("PST-F-")
+            and all(c in "0123456789ABCDEF" for c in original_id[6:])
+        )
+
+        if not valid_id or original_id in used_ids:
+            original_id = "PST-F-" + uuid.uuid4().hex[:12].upper()
+
+        while original_id in used_ids:
+            original_id = "PST-F-" + uuid.uuid4().hex[:12].upper()
+
+        item["id"] = original_id
+        used_ids.add(original_id)
+
+        original_level = str(item.get("severity", "INFO")).strip().upper()
+
+        if original_level not in allowed:
+            item["original_severity"] = original_level
+            level = "INFO"
+        else:
+            level = original_level
+
+        item["severity"] = level
+        item.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
+        item.setdefault("module", "assessment")
+        item.setdefault("issue", "Unspecified security finding")
+        item.setdefault("detail", "")
+        item.setdefault("recommendation", "")
+
+        item["module"] = str(item["module"]).strip() or "assessment"
+        item["issue"] = str(item["issue"]).strip() or "Unspecified security finding"
+
+        counts[level] += 1
+
+    return counts
 
 
 def inspect_cookies(headers, findings):
@@ -1142,17 +1213,7 @@ def unified_assessment(raw_domain, options):
         report["modules"]["portscan"] = {"error": str(exc)}
         print("Port inspection error:", exc)
 
-    counts = {
-        "CRITICAL": 0,
-        "HIGH": 0,
-        "MEDIUM": 0,
-        "LOW": 0,
-        "INFO": 0
-    }
-
-    for item in findings:
-        level = item.get("severity", "INFO")
-        counts[level] = counts.get(level, 0) + 1
+    counts = normalize_assessment_findings(findings)
 
     report["summary"] = {
         "total_findings": len(findings),

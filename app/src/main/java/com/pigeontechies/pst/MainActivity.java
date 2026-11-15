@@ -35,6 +35,7 @@ public class MainActivity extends Activity {
     private LinearLayout root;
     private EditText domainInput;
     private TextView output;
+    private JSONObject lastScanReport;
     private ExecutorService executor = Executors.newSingleThreadExecutor();
 
     private static final String UPDATE_MANIFEST_URL =
@@ -121,6 +122,13 @@ public class MainActivity extends Activity {
 
         section("FILE SECURITY");
         addButton("SELECT FILE & CALCULATE SHA-256", v -> chooseFile());
+
+        section("SCAN HISTORY");
+        addButton("SAVE CURRENT SCAN", v -> saveCurrentScan());
+        addButton("VIEW SCAN HISTORY", v -> viewScanHistory());
+        addButton("VIEW SAVED SCAN", v -> promptSavedScan());
+        addButton("COMPARE TWO SCANS", v -> promptCompareScans());
+
 
         section("SOFTWARE UPDATES");
 
@@ -398,6 +406,236 @@ public class MainActivity extends Activity {
         button.setOnClickListener(listener);
     }
 
+
+    private void saveCurrentScan() {
+        if (lastScanReport == null) {
+            Toast.makeText(
+                this,
+                "No structured scan report available yet.",
+                Toast.LENGTH_LONG
+            ).show();
+            return;
+        }
+
+        runTask("Saving scan", () -> {
+            try {
+                JSONObject copy = new JSONObject(lastScanReport.toString());
+                int id = PstHistory.saveScan(this, copy);
+
+                showResult(
+                    "SCAN SAVED SUCCESSFULLY\n\n" +
+                    "History ID: #" + id + "\n" +
+                    "Target: " + copy.optString("target", "Unknown") + "\n" +
+                    "Type: " + copy.optString("scan_type", "Unknown")
+                );
+            } catch (Exception e) {
+                showResult("SAVE FAILED\n\n" + e.getMessage());
+            }
+        });
+    }
+
+    private void viewScanHistory() {
+        runTask("Loading scan history", () -> {
+            try {
+                java.util.List<JSONObject> scans =
+                    PstHistory.newestFirst(this);
+
+                if (scans.isEmpty()) {
+                    showResult("SCAN HISTORY\n\nNo saved scans yet.");
+                    return;
+                }
+
+                StringBuilder result = new StringBuilder();
+                result.append("PIGEON SECURITY TOOLKIT\n");
+                result.append("SCAN HISTORY\n\n");
+
+                for (JSONObject scan : scans) {
+                    result.append("ID: #")
+                        .append(scan.optInt("history_id", -1))
+                        .append("\n");
+
+                    result.append("Type: ")
+                        .append(scan.optString("scan_type", "Unknown"))
+                        .append("\n");
+
+                    result.append("Target: ")
+                        .append(scan.optString("target", "Unknown"))
+                        .append("\n");
+
+                    result.append("Date: ")
+                        .append(scan.optString("finished_at", "Unknown"))
+                        .append("\n");
+
+                    result.append("-------------------------\n");
+                }
+
+                showResult(result.toString());
+
+            } catch (Exception e) {
+                showResult("HISTORY ERROR\n\n" + e.getMessage());
+            }
+        });
+    }
+
+    private void promptSavedScan() {
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setInputType(
+            android.text.InputType.TYPE_CLASS_NUMBER
+        );
+        input.setHint("Enter saved scan ID");
+
+        new AlertDialog.Builder(this)
+            .setTitle("VIEW SAVED SCAN")
+            .setView(input)
+            .setNegativeButton("CANCEL", null)
+            .setPositiveButton("VIEW", (dialog, which) -> {
+                String value = input.getText().toString().trim();
+
+                try {
+                    int id = Integer.parseInt(value);
+                    showSavedScan(id);
+                } catch (Exception e) {
+                    Toast.makeText(
+                        this,
+                        "Enter a valid scan ID.",
+                        Toast.LENGTH_SHORT
+                    ).show();
+                }
+            })
+            .show();
+    }
+
+    private void showSavedScan(int scanId) {
+        runTask("Loading saved scan", () -> {
+            try {
+                JSONObject scan = PstHistory.getScan(this, scanId);
+
+                showResult(
+                    "SAVED SECURITY REPORT\n\n" +
+                    scan.toString(2)
+                );
+            } catch (Exception e) {
+                showResult("SCAN NOT FOUND\n\n" + e.getMessage());
+            }
+        });
+    }
+
+    private void promptCompareScans() {
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(25, 10, 25, 5);
+
+        EditText oldInput = new EditText(this);
+        oldInput.setSingleLine(true);
+        oldInput.setInputType(
+            android.text.InputType.TYPE_CLASS_NUMBER
+        );
+        oldInput.setHint("Older scan ID");
+
+        EditText newInput = new EditText(this);
+        newInput.setSingleLine(true);
+        newInput.setInputType(
+            android.text.InputType.TYPE_CLASS_NUMBER
+        );
+        newInput.setHint("Newer scan ID");
+
+        layout.addView(oldInput);
+        layout.addView(newInput);
+
+        new AlertDialog.Builder(this)
+            .setTitle("COMPARE SECURITY REPORTS")
+            .setView(layout)
+            .setNegativeButton("CANCEL", null)
+            .setPositiveButton("COMPARE", (dialog, which) -> {
+                try {
+                    int oldId = Integer.parseInt(
+                        oldInput.getText().toString().trim()
+                    );
+
+                    int newId = Integer.parseInt(
+                        newInput.getText().toString().trim()
+                    );
+
+                    if (oldId == newId) {
+                        throw new Exception(
+                            "Choose two different scan IDs."
+                        );
+                    }
+
+                    compareSavedScans(oldId, newId);
+
+                } catch (Exception e) {
+                    Toast.makeText(
+                        this,
+                        e.getMessage() == null
+                            ? "Enter two valid scan IDs."
+                            : e.getMessage(),
+                        Toast.LENGTH_LONG
+                    ).show();
+                }
+            })
+            .show();
+    }
+
+    private boolean isPortScanReport(JSONObject scan) {
+        JSONArray results = scan.optJSONArray("results");
+
+        if (results == null || results.length() == 0) {
+            return false;
+        }
+
+        for (int i = 0; i < results.length(); i++) {
+            JSONObject item = results.optJSONObject(i);
+
+            if (item == null ||
+                !item.has("port") ||
+                !item.has("state")) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private void compareSavedScans(int oldId, int newId) {
+        runTask("Comparing security reports", () -> {
+            try {
+                JSONObject oldScan = PstHistory.getScan(this, oldId);
+                JSONObject newScan = PstHistory.getScan(this, newId);
+
+                if (!isPortScanReport(oldScan) ||
+                    !isPortScanReport(newScan)) {
+                    throw new Exception(
+                        "Comparison currently supports port scan reports only."
+                    );
+                }
+
+                if (!oldScan.optString("target").equalsIgnoreCase(
+                    newScan.optString("target")
+                )) {
+                    throw new Exception(
+                        "Both scans must belong to the same target."
+                    );
+                }
+
+                JSONObject comparison =
+                    PstHistory.compareScans(oldScan, newScan);
+
+                showResult(
+                    "PIGEON SECURITY TOOLKIT\n" +
+                    "SECURITY COMPARISON\n\n" +
+                    comparison.toString(2)
+                );
+
+            } catch (Exception e) {
+                showResult(
+                    "COMPARISON FAILED\n\n" + e.getMessage()
+                );
+            }
+        });
+    }
+
     private String getDomain() {
         String value = domainInput.getText().toString().trim();
         value = value.replaceFirst("^https?://", "");
@@ -426,35 +664,49 @@ public class MainActivity extends Activity {
     }
 
     private void dnsLookup() {
+        lastScanReport = null;
         try {
             String domain = getDomain();
-            InetAddress[] addresses = InetAddress.getAllByName(domain);
-            StringBuilder result = new StringBuilder();
-            result.append("DNS LOOKUP\n\nDomain: ").append(domain);
-            result.append("\n\nResolved addresses:\n");
-            for (InetAddress address : addresses) {
-                result.append("\n").append(address.getHostAddress());
-            }
-            showResult(result.toString());
+
+            JSONObject report = PstDns.inspect(domain);
+
+            JSONObject historyReport = new JSONObject();
+            historyReport.put("tool", "Pigeon Security Toolkit");
+            historyReport.put("scan_type", "DNS Intelligence");
+            historyReport.put("target", domain);
+            historyReport.put("details", report);
+            lastScanReport = historyReport;
+
+            showResult(
+                "PIGEON SECURITY TOOLKIT\n" +
+                "DNS INTELLIGENCE\n\n" +
+                report.toString(2)
+            );
+
         } catch (Exception e) {
-            showResult("DNS LOOKUP FAILED\n\n" + e.getMessage());
+            showResult("DNS INTELLIGENCE FAILED\n\n" + e.getMessage());
         }
     }
 
     private void websiteAudit() {
+        lastScanReport = null;
+        HttpURLConnection connection = null;
+
         try {
             String domain = getDomain();
             URL url = new URL("https://" + domain);
-            HttpURLConnection connection =
-                (HttpURLConnection) url.openConnection();
 
+            connection = (HttpURLConnection) url.openConnection();
             connection.setRequestMethod("GET");
             connection.setConnectTimeout(10000);
             connection.setReadTimeout(10000);
             connection.setInstanceFollowRedirects(true);
-            connection.setRequestProperty("User-Agent", "PST-Android/1.0");
+            connection.setRequestProperty("User-Agent", "PST-Android/2.0");
 
             int code = connection.getResponseCode();
+            String finalUrl = connection.getURL().toString();
+            boolean finalUrlHttps =
+                "https".equalsIgnoreCase(new URL(finalUrl).getProtocol());
 
             String[] headers = {
                 "Strict-Transport-Security",
@@ -466,26 +718,115 @@ public class MainActivity extends Activity {
             };
 
             StringBuilder result = new StringBuilder();
+            int findings = 0;
+
+            result.append("PIGEON SECURITY TOOLKIT\n");
             result.append("WEBSITE SECURITY AUDIT\n\n");
-            result.append("Domain: ").append(domain);
-            result.append("\nHTTP Status: ").append(code).append("\n\n");
+            result.append("Domain: ").append(domain).append("\n");
+            result.append("Final URL: ").append(finalUrl).append("\n");
+            result.append("HTTP Status: ").append(code).append("\n");
+            result.append("HTTPS: ")
+                .append(finalUrlHttps ? "VERIFIED CONNECTION" : "NOT HTTPS AFTER REDIRECT")
+                .append("\n\n");
+            result.append("SECURITY HEADERS\n");
+            result.append("------------------------------\n");
 
             for (String header : headers) {
                 String value = connection.getHeaderField(header);
-                result.append(header).append(": ");
-                result.append(value == null ? "NOT DETECTED" : value);
-                result.append("\n\n");
+
+                result.append("\n").append(header).append(":\n");
+
+                if (value == null || value.trim().isEmpty()) {
+                    result.append("NOT DETECTED\n");
+                    findings++;
+                } else {
+                    result.append(value).append("\n");
+                }
             }
 
-            connection.disconnect();
+            result.append("\nCOOKIE SECURITY\n");
+            result.append("------------------------------\n");
+
+            int cookieCount = 0;
+
+            for (java.util.Map.Entry<String, java.util.List<String>> entry
+                    : connection.getHeaderFields().entrySet()) {
+
+                if (entry.getKey() == null ||
+                        !entry.getKey().equalsIgnoreCase("Set-Cookie") ||
+                        entry.getValue() == null) {
+                    continue;
+                }
+
+                for (String cookie : entry.getValue()) {
+                    cookieCount++;
+
+                    String[] attributes = cookie.split(";");
+                    boolean secure = false;
+                    boolean httpOnly = false;
+                    boolean sameSite = false;
+
+                    for (String attribute : attributes) {
+                        String flag = attribute.trim()
+                            .toLowerCase(java.util.Locale.ROOT);
+
+                        if ("secure".equals(flag)) {
+                            secure = true;
+                        } else if ("httponly".equals(flag)) {
+                            httpOnly = true;
+                        } else if (flag.startsWith("samesite=")) {
+                            sameSite = true;
+                        }
+                    }
+
+                    result.append("\nCookie ").append(cookieCount).append("\n");
+                    result.append("Secure: ")
+                        .append(secure ? "YES" : "NO").append("\n");
+                    result.append("HttpOnly: ")
+                        .append(httpOnly ? "YES" : "NO").append("\n");
+                    result.append("SameSite: ")
+                        .append(sameSite ? "PRESENT" : "NOT DETECTED")
+                        .append("\n");
+
+                    if (!secure) findings++;
+                    if (!httpOnly) findings++;
+                    if (!sameSite) findings++;
+                }
+            }
+
+            if (cookieCount == 0) {
+                result.append("No Set-Cookie headers observed.\n");
+            }
+
+            result.append("\n------------------------------\n");
+            result.append("MISSING / REVIEW ITEMS: ")
+                .append(findings).append("\n");
+            result.append("\nNOTICE: These are review indicators, not confirmed vulnerabilities.");
+            result.append("\nHeader presence alone does not prove a secure configuration.");
+
+            JSONObject auditReport = new JSONObject();
+            auditReport.put("tool", "Pigeon Security Toolkit");
+            auditReport.put("scan_type", "Website Security Audit");
+            auditReport.put("target", domain);
+            auditReport.put("http_status", code);
+            auditReport.put("final_url", finalUrl);
+            auditReport.put("review_items", findings);
+            auditReport.put("details", result.toString());
+            lastScanReport = auditReport;
+
             showResult(result.toString());
 
         } catch (Exception e) {
             showResult("WEBSITE AUDIT FAILED\n\n" + e.getMessage());
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
         }
     }
 
     private void sslInspect() {
+        lastScanReport = null;
         try {
             String domain = getDomain();
             URL url = new URL("https://" + domain);
@@ -518,6 +859,14 @@ public class MainActivity extends Activity {
                     result.append(cert.getNotAfter());
                 }
             }
+
+            JSONObject sslReport = new JSONObject();
+            sslReport.put("tool", "Pigeon Security Toolkit");
+            sslReport.put("scan_type", "SSL/TLS Inspection");
+            sslReport.put("target", domain);
+            sslReport.put("cipher_suite", connection.getCipherSuite());
+            sslReport.put("details", result.toString());
+            lastScanReport = sslReport;
 
             connection.disconnect();
             showResult(result.toString());

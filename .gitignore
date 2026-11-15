@@ -25,4 +25,3 @@ pigeon_portscan_v*.py
 test.txt
 
 # Legacy package, not part of PST 1.9.1
-pst/
