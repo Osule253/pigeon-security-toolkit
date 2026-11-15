@@ -6,7 +6,7 @@ import os
 import sys
 from datetime import datetime
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 HISTORY_FILE = "pigeon_scan_history.jsonl"
 
 
@@ -25,8 +25,8 @@ def load_history():
             except json.JSONDecodeError:
                 print(f"Warning: Skipping damaged history line {line_number}")
 
-    # Newest scans first
-    return list(reversed(scans))
+    # Preserve chronological order so scan IDs remain permanent.
+    return scans
 
 
 def get_scan(scans, number):
@@ -54,12 +54,15 @@ def list_scans(scans):
     print(f"\n{'ID':<5}{'DATE':<27}{'TARGET':<24}{'OPEN':<8}")
     print("-" * 65)
 
-    for i, scan in enumerate(scans, 1):
+    # Display newest first while retaining permanent chronological IDs.
+    for index in range(len(scans) - 1, -1, -1):
+        scan = scans[index]
+        scan_id = index + 1
         date = scan.get("finished_at", "Unknown")
         target = scan.get("target", "Unknown")
         opened = scan.get("summary", {}).get("OPEN", 0)
 
-        print(f"{i:<5}{date[:25]:<27}{target[:22]:<24}{opened:<8}")
+        print(f"{scan_id:<5}{date[:25]:<27}{target[:22]:<24}{opened:<8}")
 
     print("\nUse: python pigeon_history.py show ID")
     print("Compare: python pigeon_history.py compare OLD_ID NEW_ID")

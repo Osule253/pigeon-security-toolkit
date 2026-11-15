@@ -55,6 +55,9 @@ AVAILABLE COMMANDS
   scan TARGET [OPTIONS]
       Run Pigeon PortScan.
 
+  assess DOMAIN --authorized [--ports PORTS]
+      Run unified defensive security assessment.
+
   history
       Display previous scans.
 
@@ -1185,11 +1188,123 @@ def run_script(filename, arguments):
     sys.exit(result.returncode)
 
 
+
+def run_menu_command(arguments):
+    print("\n" + "=" * 58)
+    subprocess.run(
+        [sys.executable, str(Path(__file__).resolve()), *arguments],
+        cwd=str(BASE_DIR)
+    )
+    input("\nPress Enter to return to the menu...")
+
+
+def interactive_menu():
+    while True:
+        print()
+        banner()
+        print("""
+                         MAIN MENU
+
+  [1] DNS Intelligence
+  [2] Website Security Audit
+  [3] SSL/TLS Inspector
+  [4] File Integrity (SHA-256)
+  [5] Authorized Port Scanner
+  [6] Scan History
+  [7] View Saved Scan
+  [8] Compare Security Reports
+  [9] Unified Security Assessment
+
+  [0] Exit
+
+----------------------------------------------------------
+""")
+        try:
+            choice = input("PST > ").strip()
+
+            if not choice:
+                continue
+
+            if choice == "0":
+                print("Pigeon Security Toolkit closed.")
+                return
+
+            elif choice == "1":
+                value = input("Enter domain: ").strip()
+                if value:
+                    run_menu_command(["dns", value])
+
+            elif choice == "2":
+                value = input("Enter website URL: ").strip()
+                if value:
+                    run_menu_command(["audit", value])
+
+            elif choice == "3":
+                domain = input("Enter domain: ").strip()
+                if domain:
+                    port = input("Port [443]: ").strip() or "443"
+                    run_menu_command(["ssl", domain, port])
+
+            elif choice == "4":
+                value = input("Enter file path: ").strip()
+                if value:
+                    run_menu_command(["hash", value])
+
+            elif choice == "5":
+                print("Only scan systems you own or have permission to assess.")
+                confirm = input('Type "I HAVE PERMISSION": ').strip()
+                if confirm == "I HAVE PERMISSION":
+                    target = input("Enter target: ").strip()
+                    if target:
+                        run_menu_command([
+                            "scan", target, "--authorized"
+                        ])
+                else:
+                    print("Scan cancelled.")
+
+            elif choice == "6":
+                run_menu_command(["history"])
+
+            elif choice == "7":
+                scan_id = input("Enter scan ID: ").strip()
+                if scan_id:
+                    run_menu_command(["show", scan_id])
+
+            elif choice == "8":
+                old_id = input("Old scan ID: ").strip()
+                new_id = input("New scan ID: ").strip()
+                if old_id and new_id:
+                    run_menu_command(["compare", old_id, new_id])
+
+            elif choice == "9":
+                print("Only assess systems you own or have permission to assess.")
+                confirm = input('Type "I HAVE PERMISSION": ').strip()
+                if confirm == "I HAVE PERMISSION":
+                    domain = input("Enter domain: ").strip()
+                    if domain:
+                        ports = input(
+                            "Ports [22,80,443,8080,8443]: "
+                        ).strip() or "22,80,443,8080,8443"
+                        run_menu_command([
+                            "assess", domain, "--authorized",
+                            "--ports", ports
+                        ])
+                else:
+                    print("Assessment cancelled.")
+
+            else:
+                print("Invalid selection.")
+
+        except (KeyboardInterrupt, EOFError):
+            print("\nPigeon Security Toolkit closed.")
+            return
+
+
 def main():
     args = sys.argv[1:]
 
     if not args:
-        help_menu()
+        interactive_menu()
         return
 
     command = args[0].lower()
