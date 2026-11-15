@@ -16,6 +16,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: pst-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -62,6 +66,29 @@ jobs:
         run: |
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose app/build/outputs/apk/release/app-release.apk
 
+      - name: Read APK version and calculate checksum
+        if: startsWith(github.ref, 'refs/tags/')
+        id: apk_info
+        run: |
+          APK="app/build/outputs/apk/release/app-release.apk"
+          BADGING=$("$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK")
+
+          VERSION_CODE=$(printf '%s\n' "$BADGING" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p" | head -n 1)
+          VERSION_NAME=$(printf '%s\n' "$BADGING" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p" | head -n 1)
+          SHA256=$(sha256sum "$APK" | awk '{print $1}')
+
+          test -n "$VERSION_CODE"
+          test -n "$VERSION_NAME"
+          test -n "$SHA256"
+
+          echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+
+          echo "Android version: $VERSION_NAME"
+          echo "Version code: $VERSION_CODE"
+          echo "SHA-256: $SHA256"
+
       - name: Upload APK as workflow artifact
         uses: actions/upload-artifact@v4
         with:
@@ -75,3 +102,54 @@ jobs:
         with:
           files: app/build/outputs/apk/release/app-release.apk
           generate_release_notes: true
+
+      - name: Checkout main for update manifest
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: manifest-repo
+          token: ${{ github.token }}
+
+      - name: Automatically update PST manifest
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          VERSION_CODE: ${{ steps.apk_info.outputs.version_code }}
+          VERSION_NAME: ${{ steps.apk_info.outputs.version_name }}
+          SHA256: ${{ steps.apk_info.outputs.sha256 }}
+          TAG: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          cd manifest-repo
+
+          python - <<'PY'
+          import json
+          import os
+
+          repository = os.environ["REPOSITORY"]
+          tag = os.environ["TAG"]
+
+          manifest = {
+              "versionCode": int(os.environ["VERSION_CODE"]),
+              "versionName": os.environ["VERSION_NAME"],
+              "apkUrl": f"https://github.com/{repository}/releases/download/{tag}/app-release.apk",
+              "sha256": os.environ["SHA256"],
+              "releaseNotes": f"PST Android {os.environ['VERSION_NAME']} release."
+          }
+
+          with open("pst-update.json", "w") as file:
+              json.dump(manifest, file, indent=4)
+              file.write("\n")
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add pst-update.json
+
+          if git diff --cached --quiet; then
+            echo "Manifest is already up to date."
+          else
+            git commit -m "Update PST Android release manifest"
+            git push origin HEAD:main
+          fi
