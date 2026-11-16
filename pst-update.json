@@ -1,7 +1,7 @@
 {
-    "versionCode": 4,
-    "versionName": "1.1.1",
-    "apkUrl": "https://github.com/Osule253/pigeon-security-toolkit/releases/download/v1.1.1/app-release.apk",
-    "sha256": "329358640ce4a2619721508772612de99dbfbeb177f08e4003bc145ddf8774de",
-    "releaseNotes": "PST Android 1.1.1 release."
+    "versionCode": 5,
+    "versionName": "1.2.0",
+    "apkUrl": "https://github.com/Osule253/pigeon-security-toolkit/releases/download/v1.2.0/app-release.apk",
+    "sha256": "b59b34f6ef7a920548ed1a945dd7bccf52d36a8f1eca82215ddf93be716f1069",
+    "releaseNotes": "PST Android 1.2.0 release."
 }
