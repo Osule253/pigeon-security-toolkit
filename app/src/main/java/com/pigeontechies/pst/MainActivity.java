@@ -10,6 +10,12 @@ import android.os.Bundle;
 import android.content.Intent;
 import android.net.Uri;
 import android.graphics.Color;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.graphics.RectF;
+import android.graphics.pdf.PdfDocument;
 import android.graphics.Typeface;
 import android.view.Gravity;
 import android.view.View;
@@ -29,6 +35,8 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.net.URL;
 import java.net.InetAddress;
+import java.net.Socket;
+import java.net.InetSocketAddress;
 import java.net.HttpURLConnection;
 import java.security.MessageDigest;
 import java.security.cert.Certificate;
@@ -38,11 +46,16 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import org.json.JSONObject;
 import org.json.JSONArray;
+import java.util.ArrayList;
 import androidx.core.content.FileProvider;
 
 public class MainActivity extends Activity {
 
     private LinearLayout root;
+    private LinearLayout mainLayout;
+    private LinearLayout navigationBar;
+    private FrameLayout pageContainer;
+    private int currentPage = 0;
     private EditText domainInput;
     private TextView output;
     private JSONObject lastScanReport;
@@ -218,16 +231,52 @@ public class MainActivity extends Activity {
     }
 
     private void buildInterface() {
+        mainLayout = new LinearLayout(this);
+        mainLayout.setOrientation(LinearLayout.VERTICAL);
+        mainLayout.setBackgroundColor(BG);
+
+        pageContainer = new FrameLayout(this);
+        mainLayout.addView(pageContainer,
+            new LinearLayout.LayoutParams(-1, 0, 1));
+
+        navigationBar = new LinearLayout(this);
+        navigationBar.setOrientation(LinearLayout.HORIZONTAL);
+        navigationBar.setBackgroundColor(PANEL);
+        mainLayout.addView(navigationBar,
+            new LinearLayout.LayoutParams(-1, dp(64)));
+
+        setContentView(mainLayout);
+        showPage(0);
+    }
+
+    private void showPage(int page) {
+        currentPage = page;
+        pageContainer.removeAllViews();
+
         ScrollView scroll = new ScrollView(this);
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(22, 30, 22, 30);
+        root.setPadding(dp(22), dp(25), dp(22), dp(25));
         root.setBackgroundColor(BG);
-
-        scroll.setFillViewport(true);
         scroll.addView(root);
-        setContentView(scroll);
 
+        pageContainer.addView(scroll,
+            new FrameLayout.LayoutParams(-1, -1));
+
+        if (page == 0) {
+            showHomePage();
+        } else if (page == 1) {
+            showToolsPage();
+        } else if (page == 2) {
+            showReportsPage();
+        } else {
+            showSettingsPage();
+        }
+
+        buildNavigation();
+    }
+
+    private void showHomePage() {
         TextView brand = new TextView(this);
         brand.setText("PIGEON TECHIES");
         brand.setTextColor(SILVER);
@@ -236,11 +285,11 @@ public class MainActivity extends Activity {
         root.addView(brand);
 
         TextView title = new TextView(this);
-        title.setText("PIGEON SECURITY\nTOOLKIT");
+        title.setText("PIGEON SECURITY\\nTOOLKIT");
         title.setTextColor(Color.WHITE);
         title.setTextSize(29);
         title.setTypeface(null, Typeface.BOLD);
-        title.setPadding(0, 18, 0, 5);
+        title.setPadding(0, dp(18), 0, dp(5));
         root.addView(title);
 
         versionLabel = new TextView(this);
@@ -249,13 +298,38 @@ public class MainActivity extends Activity {
         versionLabel.setTextSize(11);
         root.addView(versionLabel);
 
+        section("SECURITY STATUS");
         TextView status = new TextView(this);
         status.setText("SECURE. INSPECT. DEFEND.");
         status.setTextColor(Color.GREEN);
-        status.setTextSize(12);
-        status.setPadding(0, 25, 0, 20);
+        status.setTextSize(13);
         root.addView(status);
 
+        section("QUICK ACCESS");
+        addButton("OPEN SECURITY TOOLS", v -> showPage(1));
+        addButton("VIEW REPORTS & SCAN HISTORY", v -> showPage(2));
+        addButton("SETTINGS & LANGUAGE", v -> showPage(3));
+
+        section("SOFTWARE UPDATES");
+        updateStatus = new TextView(this);
+        updateStatus.setText("Checking for updates will be available here.");
+        updateStatus.setTextColor(SILVER);
+        updateStatus.setTextSize(12);
+        updateStatus.setPadding(dp(12), dp(14), dp(12), dp(14));
+        updateStatus.setBackgroundColor(PANEL);
+        root.addView(updateStatus);
+        addButton("CHECK FOR UPDATES", v -> checkForUpdates(true));
+
+        TextView footer = new TextView(this);
+        footer.setText("\\nPIGEON TECHIES\\npigeontechies.com");
+        footer.setTextColor(Color.GRAY);
+        footer.setTextSize(12);
+        footer.setGravity(Gravity.CENTER);
+        footer.setPadding(0, dp(30), 0, dp(10));
+        root.addView(footer);
+    }
+
+    private void showToolsPage() {
         section("WEBSITE SECURITY");
 
         domainInput = new EditText(this);
@@ -263,55 +337,76 @@ public class MainActivity extends Activity {
         domainInput.setHint("Enter domain e.g. example.com");
         domainInput.setHintTextColor(Color.GRAY);
         domainInput.setTextColor(Color.WHITE);
-        domainInput.setPadding(15, 12, 15, 12);
+        domainInput.setPadding(dp(15), dp(12), dp(15), dp(12));
         domainInput.setBackgroundColor(PANEL);
         root.addView(domainInput);
 
         addButton("DNS LOOKUP", v -> runTask("DNS lookup", this::dnsLookup));
         addButton("WEBSITE SECURITY AUDIT", v -> runTask("Website audit", this::websiteAudit));
         addButton("SSL / TLS INSPECTION", v -> runTask("SSL inspection", this::sslInspect));
+        addButton("TCP PORT SCAN (COMMON PORTS)", v -> runTask("TCP port scan", this::portScan));
 
         section("FILE SECURITY");
         addButton("SELECT FILE & CALCULATE SHA-256", v -> chooseFile());
 
-        section("SCAN HISTORY");
-        addButton("SAVE CURRENT SCAN", v -> saveCurrentScan());
-        addButton("VIEW SCAN HISTORY", v -> viewScanHistory());
-        addButton("VIEW SAVED SCAN", v -> promptSavedScan());
-        addButton("COMPARE TWO SCANS", v -> promptCompareScans());
-
-
-        section("SOFTWARE UPDATES");
-
-        updateStatus = new TextView(this);
-        updateStatus.setText("Checking for updates will be available here.");
-        updateStatus.setTextColor(SILVER);
-        updateStatus.setTextSize(12);
-        updateStatus.setPadding(12, 14, 12, 14);
-        updateStatus.setBackgroundColor(PANEL);
-        root.addView(updateStatus);
-
-        addButton("CHECK FOR UPDATES", v -> checkForUpdates(true));
-
         section("SCAN RESULTS");
-
         output = new TextView(this);
         output.setText("Ready. Select a security tool to begin.");
         output.setTextColor(SILVER);
         output.setTextSize(13);
-        output.setPadding(16, 18, 16, 18);
+        output.setPadding(dp(16), dp(18), dp(16), dp(18));
         output.setBackgroundColor(PANEL);
         root.addView(output);
-
-        TextView footer = new TextView(this);
-        footer.setText("\nPIGEON TECHIES\npigeontechies.com");
-        footer.setTextColor(Color.GRAY);
-        footer.setTextSize(12);
-        footer.setGravity(Gravity.CENTER);
-        footer.setPadding(0, 30, 0, 10);
-        root.addView(footer);
     }
 
+    private void showReportsPage() {
+        section("REPORTS");
+        addButton("SAVE CURRENT SCAN", v -> saveCurrentScan());
+        addButton("VIEW SCAN HISTORY", v -> viewScanHistory());
+        addButton("VIEW SAVED SCAN", v -> promptSavedScan());
+        addButton("COMPARE TWO SCANS", v -> promptCompareScans());
+        section("REPORT EXPORT");
+        addButton("GENERATE PDF REPORT", v -> generatePdfReport());
+    }
+
+    private void showSettingsPage() {
+        section("SETTINGS");
+        section("LANGUAGE");
+        addButton("ENGLISH", v ->
+            Toast.makeText(this, "English selected.", Toast.LENGTH_SHORT).show());
+        addButton("KISWAHILI", v ->
+            Toast.makeText(this, "Kiswahili will be configured next.", Toast.LENGTH_SHORT).show());
+        addButton("FRANÇAIS", v ->
+            Toast.makeText(this, "French will be configured next.", Toast.LENGTH_SHORT).show());
+
+        section("ABOUT");
+        TextView about = new TextView(this);
+        about.setText("PIGEON SECURITY TOOLKIT\\nPIGEON TECHIES\\nVersion " + getAppVersion() +
+            "\\npigeontechies.com");
+        about.setTextColor(SILVER);
+        about.setTextSize(13);
+        root.addView(about);
+    }
+
+    private void buildNavigation() {
+        navigationBar.removeAllViews();
+        String[] labels = {"HOME", "TOOLS", "REPORTS", "SETTINGS"};
+
+        for (int i = 0; i < labels.length; i++) {
+            final int selected = i;
+            TextView tab = new TextView(this);
+            tab.setText(labels[i]);
+            tab.setTextSize(10);
+            tab.setGravity(Gravity.CENTER);
+            tab.setTypeface(null, Typeface.BOLD);
+            tab.setTextColor(currentPage == i ? Color.WHITE : SILVER);
+            tab.setBackgroundColor(currentPage == i
+                ? Color.rgb(55, 55, 55) : PANEL);
+            navigationBar.addView(tab,
+                new LinearLayout.LayoutParams(0, -1, 1));
+            tab.setOnClickListener(v -> showPage(selected));
+        }
+    }
 
     private void checkForUpdates(boolean manual) {
         if (updateCheckInProgress) return;
@@ -976,6 +1071,58 @@ public class MainActivity extends Activity {
         }
     }
 
+
+    private void portScan() {
+        lastScanReport = null;
+        try {
+            String host = getDomain();
+            int[] ports = {21, 22, 23, 25, 53, 80, 110, 143, 443, 445,
+                    3306, 3389, 5432, 5900, 6379, 8080, 8443, 9200, 27017};
+
+            InetAddress address = InetAddress.getByName(host);
+            JSONArray openPorts = new JSONArray();
+            StringBuilder result = new StringBuilder();
+
+            result.append("PIGEON SECURITY TOOLKIT\nTCP PORT SCAN\n\n")
+                    .append("Target: ").append(host).append("\n")
+                    .append("Resolved IP: ").append(address.getHostAddress()).append("\n")
+                    .append("Ports checked: ").append(ports.length).append("\n\n");
+
+            for (int port : ports) {
+                try (Socket socket = new Socket()) {
+                    socket.connect(new InetSocketAddress(address, port), 400);
+                    openPorts.put(port);
+                    result.append(port).append("/tcp OPEN\n");
+                } catch (java.io.IOException ignored) {
+                    // Closed, filtered or unreachable.
+                }
+            }
+
+            if (openPorts.length() == 0) {
+                result.append("No open ports found in the selected list.\n");
+            }
+
+            result.append("\nOnly scan systems you own or are authorized to assess.");
+
+            JSONObject report = new JSONObject();
+            report.put("tool", "Pigeon Security Toolkit");
+            report.put("scan_type", "TCP Port Scan");
+            report.put("target", host);
+            report.put("resolved_ip", address.getHostAddress());
+            report.put("ports_scanned", ports.length);
+            report.put("open_ports", openPorts);
+            report.put("finished_at", new java.text.SimpleDateFormat(
+                    "yyyy-MM-dd HH:mm:ss", java.util.Locale.US)
+                    .format(new java.util.Date()));
+
+            lastScanReport = report;
+            showResult(result.toString());
+
+        } catch (Exception e) {
+            showResult("TCP PORT SCAN FAILED\n\n" + e.getMessage());
+        }
+    }
+
     private void sslInspect() {
         lastScanReport = null;
         try {
@@ -1050,6 +1197,15 @@ public class MainActivity extends Activity {
             return;
         }
 
+        if (requestCode == CREATE_PDF_REQUEST &&
+            resultCode == RESULT_OK && data != null) {
+            Uri pdfUri = data.getData();
+            if (pdfUri != null) {
+                writePdfReport(pdfUri);
+            }
+            return;
+        }
+
         if (requestCode == 101 && resultCode == RESULT_OK && data != null) {
             Uri uri = data.getData();
             output.setText("Calculating SHA-256...");
@@ -1084,6 +1240,155 @@ public class MainActivity extends Activity {
 
         } catch (Exception e) {
             showResult("FILE HASH FAILED\n\n" + e.getMessage());
+        }
+    }
+
+
+    private static final int CREATE_PDF_REQUEST = 103;
+
+    private void generatePdfReport() {
+        if (lastScanReport == null) {
+            Toast.makeText(this, "Run a security scan first.",
+                Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        try {
+            Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("application/pdf");
+            intent.putExtra(Intent.EXTRA_TITLE,
+                "PST-Security-Report-" + System.currentTimeMillis() + ".pdf");
+            startActivityForResult(intent, CREATE_PDF_REQUEST);
+        } catch (Exception e) {
+            Toast.makeText(this, "Cannot open PDF save dialog: " +
+                e.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void writePdfReport(Uri uri) {
+        PdfDocument document = new PdfDocument();
+        Bitmap logo = null;
+
+        try {
+            ArrayList<String> lines = new ArrayList<>();
+            lines.add("PIGEON SECURITY TOOLKIT");
+            lines.add("SECURITY ASSESSMENT REPORT");
+            lines.add("");
+            lines.add("SCAN TYPE: " +
+                lastScanReport.optString("scan_type", "Security Scan"));
+            lines.add("TARGET: " +
+                lastScanReport.optString("target", "Not specified"));
+            lines.add("FINISHED: " +
+                lastScanReport.optString("finished_at", "Not recorded"));
+            lines.add("");
+            lines.add("REPORT DETAILS");
+            lines.add("----------------------------------------");
+
+            String json = lastScanReport.toString(2);
+            for (String raw : json.split("\n")) {
+                if (raw.length() == 0) {
+                    lines.add("");
+                } else {
+                    for (int i = 0; i < raw.length(); i += 88) {
+                        lines.add(raw.substring(i,
+                            Math.min(i + 88, raw.length())));
+                    }
+                }
+            }
+
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inSampleSize = 4;
+            logo = BitmapFactory.decodeResource(
+                getResources(), R.drawable.pst_launcher_source, options);
+
+            int linesPerPage = 47;
+            int totalPages = Math.max(1,
+                (lines.size() + linesPerPage - 1) / linesPerPage);
+
+            Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            paint.setTextSize(10);
+            paint.setColor(Color.rgb(35, 35, 35));
+
+            for (int pageNumber = 0; pageNumber < totalPages; pageNumber++) {
+                PdfDocument.PageInfo info =
+                    new PdfDocument.PageInfo.Builder(595, 842,
+                        pageNumber + 1).create();
+
+                PdfDocument.Page page = document.startPage(info);
+                Canvas canvas = page.getCanvas();
+
+                canvas.drawColor(Color.WHITE);
+
+                paint.setColor(Color.BLACK);
+                canvas.drawRect(0, 0, 595, 125, paint);
+
+                if (logo != null) {
+                    paint.setFilterBitmap(true);
+                    canvas.drawBitmap(logo, null,
+                        new RectF(28, 22, 105, 99), paint);
+                }
+
+                paint.setColor(Color.WHITE);
+                paint.setTextSize(18);
+                paint.setTypeface(Typeface.create(
+                    Typeface.DEFAULT, Typeface.BOLD));
+                canvas.drawText("PIGEON SECURITY TOOLKIT",
+                    125, 55, paint);
+
+                paint.setTextSize(11);
+                paint.setTypeface(Typeface.DEFAULT);
+                paint.setColor(Color.LTGRAY);
+                canvas.drawText("SECURITY ASSESSMENT REPORT",
+                    125, 78, paint);
+
+                paint.setColor(Color.rgb(160, 160, 160));
+                canvas.drawText("BUILD. AUTOMATE. INNOVATE.",
+                    125, 98, paint);
+
+                paint.setColor(Color.rgb(35, 35, 35));
+                paint.setTextSize(9);
+                paint.setTypeface(Typeface.DEFAULT);
+
+                int start = pageNumber * linesPerPage;
+                int end = Math.min(start + linesPerPage, lines.size());
+                int y = 155;
+
+                for (int i = start; i < end; i++) {
+                    String line = lines.get(i);
+                    canvas.drawText(line, 35, y, paint);
+                    y += 13;
+                }
+
+                paint.setColor(Color.GRAY);
+                paint.setTextSize(9);
+                canvas.drawText("Pigeon Security Toolkit",
+                    35, 817, paint);
+                canvas.drawText("Page " + (pageNumber + 1) +
+                    " of " + totalPages, 490, 817, paint);
+
+                document.finishPage(page);
+            }
+
+            try (OutputStream stream =
+                    getContentResolver().openOutputStream(uri)) {
+                if (stream == null) {
+                    throw new Exception("Cannot open destination file.");
+                }
+                document.writeTo(stream);
+            }
+
+            Toast.makeText(this, "PDF report saved successfully.",
+                Toast.LENGTH_LONG).show();
+
+        } catch (Exception e) {
+            Toast.makeText(this, "PDF export failed: " +
+                e.getMessage(), Toast.LENGTH_LONG).show();
+        } finally {
+            document.close();
+            if (logo != null) {
+                logo.recycle();
+            }
         }
     }
 
