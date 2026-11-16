@@ -13,6 +13,15 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import android.view.Gravity;
 import android.view.View;
+import android.widget.FrameLayout;
+import android.view.animation.AccelerateDecelerateInterpolator;
+import android.view.animation.AlphaAnimation;
+import android.view.animation.Animation;
+import android.view.animation.RotateAnimation;
+import android.view.animation.ScaleAnimation;
+import android.os.Handler;
+import android.os.Looper;
+import android.graphics.drawable.GradientDrawable;
 import android.widget.*;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -38,6 +47,7 @@ public class MainActivity extends Activity {
     private TextView output;
     private JSONObject lastScanReport;
     private ExecutorService executor = Executors.newSingleThreadExecutor();
+    private final Handler splashHandler = new Handler(Looper.getMainLooper());
 
     private static final String UPDATE_MANIFEST_URL =
         "https://raw.githubusercontent.com/Osule253/pigeon-security-toolkit/main/pst-update.json";
@@ -54,9 +64,149 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        buildInterface();
-        checkForUpdates(false);
+        showSplashScreen();
     }
+
+
+    private int dp(float value) {
+        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    private void showSplashScreen() {
+        LinearLayout splash = new LinearLayout(this);
+        splash.setOrientation(LinearLayout.VERTICAL);
+        splash.setGravity(Gravity.CENTER);
+        splash.setBackgroundColor(Color.rgb(8, 8, 8));
+        splash.setPadding(dp(24), dp(24), dp(24), dp(24));
+
+        FrameLayout emblem = new FrameLayout(this);
+
+        GradientDrawable ringShape = new GradientDrawable();
+        ringShape.setShape(GradientDrawable.OVAL);
+        ringShape.setColor(Color.TRANSPARENT);
+        ringShape.setStroke(dp(3), SILVER);
+
+        View ring = new View(this);
+        ring.setBackground(ringShape);
+
+        FrameLayout.LayoutParams ringParams = new FrameLayout.LayoutParams(
+            dp(170), dp(170), Gravity.CENTER
+        );
+        emblem.addView(ring, ringParams);
+
+        TextView logo = new TextView(this);
+        logo.setText("PST");
+        logo.setTextColor(Color.WHITE);
+        logo.setTextSize(38);
+        logo.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+        logo.setGravity(Gravity.CENTER);
+
+        GradientDrawable logoShape = new GradientDrawable();
+        logoShape.setColor(Color.rgb(24, 24, 24));
+        logoShape.setCornerRadius(dp(24));
+        logoShape.setStroke(dp(2), SILVER);
+        logo.setBackground(logoShape);
+
+        FrameLayout.LayoutParams logoParams = new FrameLayout.LayoutParams(
+            dp(112), dp(112), Gravity.CENTER
+        );
+        emblem.addView(logo, logoParams);
+
+        LinearLayout.LayoutParams emblemParams = new LinearLayout.LayoutParams(
+            dp(190), dp(190)
+        );
+        splash.addView(emblem, emblemParams);
+
+        RotateAnimation rotation = new RotateAnimation(
+            0, 360,
+            Animation.RELATIVE_TO_SELF, 0.5f,
+            Animation.RELATIVE_TO_SELF, 0.5f
+        );
+        rotation.setDuration(8000);
+        rotation.setRepeatCount(Animation.INFINITE);
+        rotation.setInterpolator(new android.view.animation.LinearInterpolator());
+        ring.startAnimation(rotation);
+
+        ScaleAnimation pulse = new ScaleAnimation(
+            0.96f, 1.04f, 0.96f, 1.04f,
+            Animation.RELATIVE_TO_SELF, 0.5f,
+            Animation.RELATIVE_TO_SELF, 0.5f
+        );
+        pulse.setDuration(1800);
+        pulse.setRepeatMode(Animation.REVERSE);
+        pulse.setRepeatCount(Animation.INFINITE);
+        pulse.setInterpolator(new AccelerateDecelerateInterpolator());
+        logo.startAnimation(pulse);
+
+        TextView brand = new TextView(this);
+        brand.setText("PIGEON SECURITY TOOLKIT");
+        brand.setTextColor(SILVER);
+        brand.setTextSize(14);
+        brand.setLetterSpacing(0.16f);
+        brand.setGravity(Gravity.CENTER);
+        brand.setPadding(0, dp(28), 0, dp(20));
+        splash.addView(brand);
+
+        TextView phase = new TextView(this);
+        phase.setTextColor(Color.WHITE);
+        phase.setTextSize(19);
+        phase.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+        phase.setLetterSpacing(0.20f);
+        phase.setGravity(Gravity.CENTER);
+        splash.addView(phase);
+
+        TextView tagline = new TextView(this);
+        tagline.setText("ANDROID SECURITY EDITION");
+        tagline.setTextColor(Color.GRAY);
+        tagline.setTextSize(10);
+        tagline.setGravity(Gravity.CENTER);
+        tagline.setPadding(0, dp(22), 0, 0);
+        splash.addView(tagline);
+
+        setContentView(splash);
+
+        showSplashPhase(phase, "SECURE");
+
+        splashHandler.postDelayed(
+            () -> showSplashPhase(phase, "INSPECT"), 3000
+        );
+
+        splashHandler.postDelayed(
+            () -> showSplashPhase(phase, "DEFEND"), 6000
+        );
+
+        splashHandler.postDelayed(() -> {
+            if (!isFinishing() && !isDestroyed()) {
+                buildInterface();
+                checkForUpdates(false);
+            }
+        }, 10000);
+    }
+
+    private void showSplashPhase(TextView phase, String word) {
+        AlphaAnimation fadeOut = new AlphaAnimation(1f, 0f);
+        fadeOut.setDuration(250);
+        fadeOut.setAnimationListener(new Animation.AnimationListener() {
+            @Override
+            public void onAnimationStart(Animation animation) {}
+
+            @Override
+            public void onAnimationEnd(Animation animation) {
+                phase.setText(word);
+
+                AlphaAnimation fadeIn = new AlphaAnimation(0f, 1f);
+                fadeIn.setDuration(450);
+                fadeIn.setInterpolator(new AccelerateDecelerateInterpolator());
+                phase.startAnimation(fadeIn);
+            }
+
+            @Override
+            public void onAnimationRepeat(Animation animation) {}
+        });
+
+        phase.startAnimation(fadeOut);
+    }
+
 
     private String getAppVersion() {
         try {
@@ -939,6 +1089,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        splashHandler.removeCallbacksAndMessages(null);
         super.onDestroy();
         executor.shutdown();
     }
