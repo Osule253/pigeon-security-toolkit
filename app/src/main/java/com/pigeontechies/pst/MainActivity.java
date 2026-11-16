@@ -2,6 +2,10 @@ package com.pigeontechies.pst;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.Manifest;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.os.Environment;
@@ -69,6 +73,8 @@ public class MainActivity extends Activity {
     private TextView updateStatus;
     private boolean updateCheckInProgress = false;
     private File pendingUpdateFile;
+    private static final int UPDATE_NOTIFICATION_ID = 1300;
+    private static final String UPDATE_CHANNEL_ID = "pst_updates";
 
     private final int BG = Color.rgb(12, 12, 12);
     private final int PANEL = Color.rgb(28, 28, 28);
@@ -486,6 +492,51 @@ public class MainActivity extends Activity {
     }
 
 
+    private void setUpdateStatus(String message) {
+        runOnUiThread(() -> {
+            if (updateStatus != null) updateStatus.setText(message);
+        });
+    }
+
+    private void postUpdateNotification(
+            String message, int progress, boolean indeterminate, boolean ongoing) {
+        try {
+            NotificationManager manager =
+                (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (manager == null) return;
+
+            if (android.os.Build.VERSION.SDK_INT >= 26) {
+                NotificationChannel channel = new NotificationChannel(
+                    UPDATE_CHANNEL_ID, "PST software updates",
+                    NotificationManager.IMPORTANCE_LOW);
+                manager.createNotificationChannel(channel);
+            }
+
+            Notification.Builder builder;
+            if (android.os.Build.VERSION.SDK_INT >= 26) {
+                builder = new Notification.Builder(this, UPDATE_CHANNEL_ID);
+            } else {
+                builder = new Notification.Builder(this);
+            }
+
+            builder.setSmallIcon(android.R.drawable.stat_sys_download)
+                .setContentTitle("Pigeon Security Toolkit")
+                .setContentText(message)
+                .setOnlyAlertOnce(true)
+                .setOngoing(ongoing);
+
+            if (ongoing) {
+                builder.setProgress(100, progress, indeterminate);
+            } else {
+                builder.setProgress(0, 0, false).setAutoCancel(true);
+            }
+
+            manager.notify(UPDATE_NOTIFICATION_ID, builder.build());
+        } catch (SecurityException ignored) {
+            // A denied notification permission must not interrupt the download.
+        }
+    }
+
     private void downloadUpdate(String apkUrl, String expectedSha256) {
         if (apkUrl == null || !apkUrl.startsWith("https://github.com/Osule253/pigeon-security-toolkit/releases/download/") ||
             expectedSha256 == null ||
@@ -494,7 +545,15 @@ public class MainActivity extends Activity {
             return;
         }
 
-        updateStatus.setText("Downloading update...");
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(
+                new String[]{Manifest.permission.POST_NOTIFICATIONS}, 104);
+        }
+
+        setUpdateStatus("Downloading update...");
+        postUpdateNotification("Preparing secure download...", 0, true, true);
 
         executor.execute(() -> {
             HttpURLConnection connection = null;
@@ -537,6 +596,8 @@ public class MainActivity extends Activity {
                 MessageDigest digest = MessageDigest.getInstance("SHA-256");
                 byte[] buffer = new byte[8192];
                 long total = 0;
+                int contentLength = connection.getContentLength();
+                int lastProgress = -1;
 
                 try (InputStream input = connection.getInputStream();
                      OutputStream outputStream =
@@ -552,6 +613,24 @@ public class MainActivity extends Activity {
 
                         digest.update(buffer, 0, count);
                         outputStream.write(buffer, 0, count);
+
+                        int progress = contentLength > 0
+                            ? (int) Math.min(100, total * 100 / contentLength)
+                            : -1;
+
+                        if (progress >= 0 && progress / 5 != lastProgress / 5) {
+                            lastProgress = progress;
+                            postUpdateNotification(
+                                "Downloading update: " + progress + "%",
+                                progress, false, true);
+                            setUpdateStatus("Downloading update: " + progress + "%");
+                        } else if (progress < 0 &&
+                                   total / (1024 * 1024) !=
+                                   (total - count) / (1024 * 1024)) {
+                            postUpdateNotification(
+                                "Downloaded " + (total / 1024 / 1024) + " MB",
+                                0, true, true);
+                        }
                     }
                 }
 
@@ -565,8 +644,16 @@ public class MainActivity extends Activity {
                     throw new Exception("SHA-256 verification failed.");
                 }
 
+                if (!verifyUpdateSignature(apkFile)) {
+                    throw new Exception(
+                        "APK signing certificate does not match installed PST.");
+                }
+
                 File verifiedFile = apkFile;
                 pendingUpdateFile = verifiedFile;
+                postUpdateNotification(
+                    "Download verified. Opening installer.",
+                    100, false, false);
 
                 runOnUiThread(() -> {
                     updateStatus.setText("Download verified.");
@@ -576,12 +663,79 @@ public class MainActivity extends Activity {
             } catch (Exception e) {
                 if (apkFile != null) apkFile.delete();
 
+                postUpdateNotification(
+                    "Update failed: " + e.getMessage(), 0, false, false);
                 runOnUiThread(() ->
                     updateStatus.setText("UPDATE FAILED: " + e.getMessage()));
             } finally {
                 if (connection != null) connection.disconnect();
             }
         });
+    }
+
+    private boolean verifyUpdateSignature(File apkFile) throws Exception {
+        int flags = android.os.Build.VERSION.SDK_INT >= 28
+            ? PackageManager.GET_SIGNING_CERTIFICATES
+            : PackageManager.GET_SIGNATURES;
+
+        PackageInfo installed =
+            getPackageManager().getPackageInfo(getPackageName(), flags);
+
+        PackageInfo downloaded =
+            getPackageManager().getPackageArchiveInfo(
+                apkFile.getAbsolutePath(), flags);
+
+        if (downloaded == null ||
+            !getPackageName().equals(downloaded.packageName)) {
+            return false;
+        }
+
+        android.content.pm.Signature[] installedSigners;
+        android.content.pm.Signature[] downloadedSigners;
+
+        if (android.os.Build.VERSION.SDK_INT >= 28) {
+            if (installed.signingInfo == null ||
+                downloaded.signingInfo == null) return false;
+
+            installedSigners =
+                installed.signingInfo.getApkContentsSigners();
+            downloadedSigners =
+                downloaded.signingInfo.getApkContentsSigners();
+        } else {
+            installedSigners = installed.signatures;
+            downloadedSigners = downloaded.signatures;
+        }
+
+        if (installedSigners == null || downloadedSigners == null ||
+            installedSigners.length == 0 ||
+            installedSigners.length != downloadedSigners.length) {
+            return false;
+        }
+
+        java.util.Set<String> installedHashes = new java.util.HashSet<>();
+        java.util.Set<String> downloadedHashes = new java.util.HashSet<>();
+
+        MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
+
+        for (android.content.pm.Signature signer : installedSigners) {
+            installedHashes.add(
+                bytesToHex(sha256.digest(signer.toByteArray())));
+        }
+
+        for (android.content.pm.Signature signer : downloadedSigners) {
+            downloadedHashes.add(
+                bytesToHex(sha256.digest(signer.toByteArray())));
+        }
+
+        return installedHashes.equals(downloadedHashes);
+    }
+
+    private String bytesToHex(byte[] bytes) {
+        StringBuilder result = new StringBuilder();
+        for (byte b : bytes) {
+            result.append(String.format("%02x", b & 0xff));
+        }
+        return result.toString();
     }
 
     private void installUpdate(File apkFile) {
@@ -1272,52 +1426,246 @@ public class MainActivity extends Activity {
 
         try {
             ArrayList<String> lines = new ArrayList<>();
-            lines.add("PIGEON SECURITY TOOLKIT");
-            lines.add("SECURITY ASSESSMENT REPORT");
-            lines.add("");
-            lines.add("SCAN TYPE: " +
-                lastScanReport.optString("scan_type", "Security Scan"));
-            lines.add("TARGET: " +
-                lastScanReport.optString("target", "Not specified"));
-            lines.add("FINISHED: " +
-                lastScanReport.optString("finished_at", "Not recorded"));
-            lines.add("");
-            lines.add("REPORT DETAILS");
-            lines.add("----------------------------------------");
+            String scanType = lastScanReport.optString("scan_type", "Security Assessment");
+            String target = lastScanReport.optString("target", "Not specified");
+            String finished = lastScanReport.optString("finished_at", "Not recorded");
 
-            String json = lastScanReport.toString(2);
-            for (String raw : json.split("\n")) {
-                if (raw.length() == 0) {
-                    lines.add("");
+            reportHeading(lines, "ASSESSMENT OVERVIEW");
+            reportLine(lines, "Assessment type: " + scanType);
+            reportLine(lines, "Target assessed: " + target);
+            reportLine(lines, "Date completed: " + finished);
+            reportLine(lines, "This document presents the results of a security assessment "
+                    + "performed using Pigeon Security Toolkit.");
+
+            String type = scanType.toLowerCase(java.util.Locale.US);
+
+            if (type.contains("tcp") || type.contains("port")) {
+                reportHeading(lines, "NETWORK PORT SCAN RESULTS");
+
+                String ip = lastScanReport.optString("resolved_ip", "");
+                if (!ip.isEmpty()) {
+                    reportLine(lines, "Resolved network address: " + ip);
+                }
+
+                int checked = lastScanReport.optInt("ports_scanned", 0);
+                JSONArray ports = lastScanReport.optJSONArray("open_ports");
+                int count = ports == null ? 0 : ports.length();
+
+                reportLine(lines, "Number of ports tested: " + checked);
+                reportLine(lines, "Open ports detected: " + count);
+
+                reportHeading(lines, "WHAT THE RESULTS MEAN");
+
+                if (count == 0) {
+                    reportLine(lines, "No open ports were detected among the ports tested. "
+                            + "This does not prove that the entire system has no exposed services.");
                 } else {
-                    for (int i = 0; i < raw.length(); i += 88) {
-                        lines.add(raw.substring(i,
-                            Math.min(i + 88, raw.length())));
+                    reportLine(lines, count + " port(s) accepted a TCP connection during "
+                            + "the assessment. This means a service may be reachable through "
+                            + "those network ports.");
+                    reportLine(lines, "An open port is not automatically a security "
+                            + "vulnerability. The service, its purpose and its configuration "
+                            + "must be examined before a risk can be confirmed.");
+
+                    reportHeading(lines, "PORT-BY-PORT FINDINGS");
+
+                    for (int i = 0; i < ports.length(); i++) {
+                        int port = ports.optInt(i, -1);
+                        String service;
+                        String explanation;
+
+                        switch (port) {
+                            case 21:
+                                service = "FTP";
+                                explanation = "File Transfer Protocol. Check whether "
+                                        + "file transfers are necessary and securely configured.";
+                                break;
+                            case 22:
+                                service = "SSH";
+                                explanation = "Secure Shell. Used for remote administration. "
+                                        + "Restrict access to trusted administrators.";
+                                break;
+                            case 23:
+                                service = "Telnet";
+                                explanation = "Remote terminal service. It does not encrypt "
+                                        + "traffic and should generally be avoided.";
+                                break;
+                            case 25:
+                                service = "SMTP";
+                                explanation = "Mail transfer service. Review relay restrictions "
+                                        + "and mail server configuration.";
+                                break;
+                            case 53:
+                                service = "DNS";
+                                explanation = "Domain Name System. Used to resolve domain "
+                                        + "names into network addresses. Review DNS exposure "
+                                        + "and configuration.";
+                                break;
+                            case 80:
+                                service = "HTTP";
+                                explanation = "Standard web traffic. Confirm that the website "
+                                        + "redirects visitors to HTTPS where appropriate.";
+                                break;
+                            case 110:
+                                service = "POP3";
+                                explanation = "Email retrieval service. Check encryption "
+                                        + "and whether public access is required.";
+                                break;
+                            case 143:
+                                service = "IMAP";
+                                explanation = "Email access service. Confirm secure "
+                                        + "configuration and authentication.";
+                                break;
+                            case 443:
+                                service = "HTTPS";
+                                explanation = "Encrypted web traffic. Review the TLS "
+                                        + "certificate and server configuration.";
+                                break;
+                            case 445:
+                                service = "SMB";
+                                explanation = "File sharing service. Public exposure should "
+                                        + "be carefully restricted.";
+                                break;
+                            case 3306:
+                                service = "MySQL";
+                                explanation = "Database service. Database access should "
+                                        + "normally be restricted to trusted systems.";
+                                break;
+                            case 3389:
+                                service = "RDP";
+                                explanation = "Remote Desktop Protocol. Restrict remote "
+                                        + "access and enforce strong authentication.";
+                                break;
+                            case 5432:
+                                service = "PostgreSQL";
+                                explanation = "Database service. Check network restrictions "
+                                        + "and authentication controls.";
+                                break;
+                            case 5900:
+                                service = "VNC";
+                                explanation = "Remote desktop service. Restrict access "
+                                        + "and use secure remote administration.";
+                                break;
+                            case 6379:
+                                service = "Redis";
+                                explanation = "Data store service. Ensure it is not exposed "
+                                        + "unnecessarily to untrusted networks.";
+                                break;
+                            case 8080:
+                                service = "Alternative HTTP";
+                                explanation = "Often used by web applications or proxy "
+                                        + "services. Identify the application using this port.";
+                                break;
+                            case 8443:
+                                service = "Alternative HTTPS";
+                                explanation = "Often used for secure web applications or "
+                                        + "administration interfaces. Review access controls.";
+                                break;
+                            case 9200:
+                                service = "Elasticsearch";
+                                explanation = "Search and data service. Check authentication "
+                                        + "and network exposure.";
+                                break;
+                            case 27017:
+                                service = "MongoDB";
+                                explanation = "Database service. Verify authentication "
+                                        + "and restrict external access.";
+                                break;
+                            default:
+                                service = "Unknown service";
+                                explanation = "Identify the application listening on this "
+                                        + "port and verify that its exposure is intentional.";
+                                break;
+                        }
+
+                        reportLine(lines, "Port " + port + "/TCP — " + service);
+                        reportLine(lines, "Explanation: " + explanation);
                     }
                 }
+
+                reportHeading(lines, "SECURITY RECOMMENDATIONS");
+                reportLine(lines, "1. Confirm that each exposed service is required.");
+                reportLine(lines, "2. Restrict unnecessary public network access.");
+                reportLine(lines, "3. Review firewall rules and access permissions.");
+                reportLine(lines, "4. Check service versions and security configurations.");
+                reportLine(lines, "5. Conduct further testing before declaring a vulnerability.");
+            } else if (type.contains("dns")) {
+                reportHeading(lines, "DNS ASSESSMENT");
+                reportLine(lines, "A DNS lookup examines how the target domain is resolved "
+                        + "and identifies the DNS information returned during the assessment.");
+                reportLine(lines, "Review the returned records to confirm that they point "
+                        + "to the intended services and infrastructure.");
+            } else if (type.contains("ssl") || type.contains("tls")) {
+                reportHeading(lines, "SSL / TLS ASSESSMENT");
+                reportLine(lines, "This assessment examines information available about "
+                        + "the target's encrypted connection.");
+                reportLine(lines, "Certificate validity, expiration, hostname matching "
+                        + "and supported security settings should be reviewed.");
+            } else if (type.contains("website") || type.contains("audit")) {
+                reportHeading(lines, "WEBSITE SECURITY ASSESSMENT");
+                reportLine(lines, "This assessment reviews the website security indicators "
+                        + "collected by Pigeon Security Toolkit.");
+                reportLine(lines, "Review the findings below to identify configurations "
+                        + "that may require further investigation.");
+            } else if (type.contains("hash") || type.contains("file")) {
+                reportHeading(lines, "FILE INTEGRITY ASSESSMENT");
+                reportLine(lines, "A SHA-256 file hash is a digital fingerprint of the "
+                        + "file contents. It can help identify whether two files have "
+                        + "identical contents or whether a file has changed.");
+                reportLine(lines, "A hash alone does not establish whether a file is "
+                        + "malicious or safe.");
+            } else {
+                reportHeading(lines, "ASSESSMENT FINDINGS");
+                reportLine(lines, "The following section explains the technical information "
+                        + "collected during this assessment.");
             }
+
+            reportHeading(lines, "TECHNICAL EVIDENCE");
+            java.util.Iterator<String> keys = lastScanReport.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                if ("tool".equals(key) || "scan_type".equals(key)
+                        || "target".equals(key) || "finished_at".equals(key)
+                        || "resolved_ip".equals(key) || "ports_scanned".equals(key)
+                        || "open_ports".equals(key)) {
+                    continue;
+                }
+                reportJsonField(lines, key, lastScanReport.opt(key), 0);
+            }
+
+            reportHeading(lines, "ASSESSMENT CONCLUSION");
+            reportLine(lines, "This report documents the observations collected during "
+                    + "the assessment. Findings should be reviewed by the system owner "
+                    + "and investigated where necessary.");
+            reportLine(lines, "The results represent the tested scope and conditions "
+                    + "at the time of scanning. They do not guarantee that all security "
+                    + "weaknesses have been identified.");
+
+            reportHeading(lines, "ASSESSMENT INFORMATION");
+            reportLine(lines, "Generated by: Pigeon Security Toolkit");
+            reportLine(lines, "Report type: Automated security assessment");
+            reportLine(lines, "Authorized testing notice: Assess only systems you own "
+                    + "or have permission to examine.");
 
             BitmapFactory.Options options = new BitmapFactory.Options();
             options.inSampleSize = 4;
             logo = BitmapFactory.decodeResource(
-                getResources(), R.drawable.pst_launcher_source, options);
+                    getResources(), R.drawable.pst_launcher_source, options);
 
             int linesPerPage = 47;
             int totalPages = Math.max(1,
-                (lines.size() + linesPerPage - 1) / linesPerPage);
+                    (lines.size() + linesPerPage - 1) / linesPerPage);
 
             Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            paint.setTextSize(10);
+            paint.setTextSize(9);
             paint.setColor(Color.rgb(35, 35, 35));
 
             for (int pageNumber = 0; pageNumber < totalPages; pageNumber++) {
                 PdfDocument.PageInfo info =
-                    new PdfDocument.PageInfo.Builder(595, 842,
-                        pageNumber + 1).create();
-
+                        new PdfDocument.PageInfo.Builder(595, 842,
+                                pageNumber + 1).create();
                 PdfDocument.Page page = document.startPage(info);
                 Canvas canvas = page.getCanvas();
-
                 canvas.drawColor(Color.WHITE);
 
                 paint.setColor(Color.BLACK);
@@ -1326,25 +1674,22 @@ public class MainActivity extends Activity {
                 if (logo != null) {
                     paint.setFilterBitmap(true);
                     canvas.drawBitmap(logo, null,
-                        new RectF(28, 22, 105, 99), paint);
+                            new RectF(28, 22, 105, 99), paint);
                 }
 
                 paint.setColor(Color.WHITE);
                 paint.setTextSize(18);
                 paint.setTypeface(Typeface.create(
-                    Typeface.DEFAULT, Typeface.BOLD));
-                canvas.drawText("PIGEON SECURITY TOOLKIT",
-                    125, 55, paint);
+                        Typeface.DEFAULT, Typeface.BOLD));
+                canvas.drawText("PIGEON SECURITY TOOLKIT", 125, 55, paint);
 
                 paint.setTextSize(11);
                 paint.setTypeface(Typeface.DEFAULT);
                 paint.setColor(Color.LTGRAY);
-                canvas.drawText("SECURITY ASSESSMENT REPORT",
-                    125, 78, paint);
+                canvas.drawText("SECURITY ASSESSMENT REPORT", 125, 78, paint);
 
                 paint.setColor(Color.rgb(160, 160, 160));
-                canvas.drawText("BUILD. AUTOMATE. INNOVATE.",
-                    125, 98, paint);
+                canvas.drawText("BUILD. AUTOMATE. INNOVATE.", 125, 98, paint);
 
                 paint.setColor(Color.rgb(35, 35, 35));
                 paint.setTextSize(9);
@@ -1356,16 +1701,26 @@ public class MainActivity extends Activity {
 
                 for (int i = start; i < end; i++) {
                     String line = lines.get(i);
-                    canvas.drawText(line, 35, y, paint);
+                    if (line.startsWith("## ")) {
+                        paint.setTypeface(Typeface.create(
+                                Typeface.DEFAULT, Typeface.BOLD));
+                        paint.setTextSize(10);
+                        paint.setColor(Color.BLACK);
+                        canvas.drawText(line.substring(3), 35, y, paint);
+                        paint.setTypeface(Typeface.DEFAULT);
+                        paint.setTextSize(9);
+                        paint.setColor(Color.rgb(35, 35, 35));
+                    } else {
+                        canvas.drawText(line, 35, y, paint);
+                    }
                     y += 13;
                 }
 
                 paint.setColor(Color.GRAY);
                 paint.setTextSize(9);
-                canvas.drawText("Pigeon Security Toolkit",
-                    35, 817, paint);
-                canvas.drawText("Page " + (pageNumber + 1) +
-                    " of " + totalPages, 490, 817, paint);
+                canvas.drawText("Pigeon Security Toolkit", 35, 817, paint);
+                canvas.drawText("Page " + (pageNumber + 1)
+                        + " of " + totalPages, 490, 817, paint);
 
                 document.finishPage(page);
             }
@@ -1378,17 +1733,83 @@ public class MainActivity extends Activity {
                 document.writeTo(stream);
             }
 
-            Toast.makeText(this, "PDF report saved successfully.",
-                Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Professional PDF report saved successfully.",
+                    Toast.LENGTH_LONG).show();
 
         } catch (Exception e) {
-            Toast.makeText(this, "PDF export failed: " +
-                e.getMessage(), Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "PDF export failed: " + e.getMessage(),
+                    Toast.LENGTH_LONG).show();
         } finally {
             document.close();
             if (logo != null) {
                 logo.recycle();
             }
+        }
+    }
+
+    private void reportHeading(ArrayList<String> lines, String heading) {
+        lines.add("");
+        lines.add("## " + heading);
+        lines.add("");
+    }
+
+    private void reportLine(ArrayList<String> lines, String text) {
+        if (text == null || text.trim().isEmpty()) {
+            lines.add("");
+            return;
+        }
+
+        String remaining = text.trim();
+        while (remaining.length() > 88) {
+            int split = remaining.lastIndexOf(' ', 88);
+            if (split < 30) {
+                split = 88;
+            }
+            lines.add(remaining.substring(0, split));
+            remaining = "   " + remaining.substring(split).trim();
+        }
+        lines.add(remaining);
+    }
+
+    private String reportLabel(String key) {
+        String label = key.replace('_', ' ').replace('-', ' ');
+        StringBuilder result = new StringBuilder();
+        for (String word : label.split("\\s+")) {
+            if (word.isEmpty()) continue;
+            if (result.length() > 0) result.append(' ');
+            result.append(Character.toUpperCase(word.charAt(0)));
+            if (word.length() > 1) result.append(word.substring(1));
+        }
+        return result.toString();
+    }
+
+    private void reportJsonField(ArrayList<String> lines,
+            String key, Object value, int depth) {
+        if (depth > 3 || value == null || value == JSONObject.NULL) {
+            return;
+        }
+
+        String indent = depth == 0 ? "" : "   ".repeat(depth);
+        String label = indent + reportLabel(key) + ": ";
+
+        if (value instanceof JSONObject) {
+            reportLine(lines, indent + reportLabel(key) + ":");
+            JSONObject object = (JSONObject) value;
+            java.util.Iterator<String> iterator = object.keys();
+            while (iterator.hasNext()) {
+                String child = iterator.next();
+                reportJsonField(lines, child, object.opt(child), depth + 1);
+            }
+        } else if (value instanceof JSONArray) {
+            JSONArray array = (JSONArray) value;
+            reportLine(lines, indent + reportLabel(key)
+                    + " (" + array.length() + " entries):");
+            for (int i = 0; i < array.length(); i++) {
+                reportJsonField(lines, "Item " + (i + 1),
+                        array.opt(i), depth + 1);
+            }
+        } else {
+            reportLine(lines, label + String.valueOf(value));
         }
     }
 
