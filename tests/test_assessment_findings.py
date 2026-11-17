@@ -108,5 +108,88 @@ class AssessmentNormalizationTests(unittest.TestCase):
         self.assertTrue(loaded["findings"][0]["id"].startswith("PST-F-"))
         self.assertIn("timestamp", loaded["findings"][0])
 
+
+class AssessmentSummaryTests(unittest.TestCase):
+    def test_all_modules_completed(self):
+        modules = {
+            "dns": {"status": "completed"},
+            "email_security": {"status": "completed"},
+            "website": {"status": "completed"},
+            "ssl": {"status": "completed"},
+            "portscan": {"status": "completed"},
+        }
+
+        summary = pst.build_assessment_summary(modules, [])
+
+        self.assertEqual(summary["overall_status"], "completed")
+        self.assertEqual(summary["modules_completed"], 5)
+        self.assertEqual(summary["modules_failed"], 0)
+        self.assertEqual(summary["modules_not_assessed"], 0)
+
+    def test_failed_module_makes_assessment_incomplete(self):
+        modules = {
+            "dns": {"status": "completed"},
+            "ssl": {"error": "Connection failed"},
+        }
+
+        summary = pst.build_assessment_summary(modules, [])
+
+        self.assertEqual(summary["overall_status"], "incomplete")
+        self.assertEqual(summary["module_status"]["ssl"], "failed")
+        self.assertEqual(summary["modules_failed"], 1)
+
+    def test_partial_module_is_reported(self):
+        modules = {
+            "ssl": {"status": "partial"},
+            "dns": {"status": "completed"},
+        }
+
+        summary = pst.build_assessment_summary(modules, [])
+
+        self.assertEqual(
+            summary["overall_status"], "partially_completed"
+        )
+        self.assertEqual(summary["modules_partial"], 1)
+
+    def test_empty_module_is_not_assessed(self):
+        modules = {
+            "dns": {"status": "completed"},
+            "website": {},
+        }
+
+        summary = pst.build_assessment_summary(modules, [])
+
+        self.assertEqual(summary["overall_status"], "incomplete")
+        self.assertEqual(
+            summary["module_status"]["website"], "not_assessed"
+        )
+        self.assertEqual(summary["modules_not_assessed"], 1)
+
+    def test_no_findings_does_not_claim_target_is_secure(self):
+        modules = {"dns": {"status": "completed"}}
+
+        summary = pst.build_assessment_summary(modules, [])
+
+        self.assertEqual(summary["total_findings"], 0)
+        self.assertIn(
+            "does not establish that the target is secure",
+            summary["security_conclusion"]
+        )
+
+    def test_summary_counts_findings_and_observations(self):
+        modules = {"dns": {"status": "completed"}}
+        findings = [
+            {"severity": "HIGH", "issue": "Test finding"}
+        ]
+        observations = [{"port": 443, "state": "OPEN"}]
+
+        summary = pst.build_assessment_summary(
+            modules, findings, observations
+        )
+
+        self.assertEqual(summary["total_findings"], 1)
+        self.assertEqual(summary["service_observations"], 1)
+        self.assertEqual(summary["severity_counts"]["HIGH"], 1)
+
 if __name__ == "__main__":
     unittest.main()

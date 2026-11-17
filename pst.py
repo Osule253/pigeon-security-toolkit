@@ -882,6 +882,7 @@ def unified_assessment(raw_domain, options):
             answers = result.get("Answer", []) if isinstance(result, dict) else []
             dns[record_type] = answers
 
+        dns["status"] = "completed"
         report["modules"]["dns"] = dns
 
         txt_records = [
@@ -920,6 +921,7 @@ def unified_assessment(raw_domain, options):
             }
         }
 
+        email_security["status"] = "completed"
         report["modules"]["email_security"] = email_security
 
         if not spf_records:
@@ -1004,6 +1006,7 @@ def unified_assessment(raw_domain, options):
 
         if website_path.exists():
             website = json.loads(website_path.read_text())
+            website["status"] = "completed"
             report["modules"]["website"] = website
 
             recommendations = {
@@ -1059,6 +1062,7 @@ def unified_assessment(raw_domain, options):
 
         if ssl_path.exists():
             ssl = json.loads(ssl_path.read_text())
+            ssl["status"] = "completed"
             report["modules"]["ssl"] = ssl
 
             if not ssl.get("connection_successful", False):
@@ -1131,6 +1135,7 @@ def unified_assessment(raw_domain, options):
 
         if port_path.exists():
             port_report = json.loads(port_path.read_text())
+            port_report["status"] = "completed" if result.returncode == 0 else "partial"
             report["modules"]["portscan"] = port_report
 
             # Cloudflare edge detection based on observed HTTP evidence.
@@ -1213,22 +1218,25 @@ def unified_assessment(raw_domain, options):
         report["modules"]["portscan"] = {"error": str(exc)}
         print("Port inspection error:", exc)
 
-    counts = normalize_assessment_findings(findings)
-
-    report["summary"] = {
-        "total_findings": len(findings),
-        "service_observations": len(observations),
-        "severity_counts": counts
-    }
+    report["summary"] = build_assessment_summary(
+        report["modules"], findings, observations
+    )
+    counts = report["summary"]["severity_counts"]
 
     output = BASE_DIR / "pigeon-assessment.json"
     output.write_text(json.dumps(report, indent=4))
 
     print("\n" + "=" * 55)
     print("PST 1.9.1 ASSESSMENT COMPLETE")
+    print("Overall assessment status:", report["summary"]["overall_status"])
+    print("Modules completed:", report["summary"]["modules_completed"])
+    print("Modules failed:", report["summary"]["modules_failed"])
+    print("Modules partial:", report["summary"]["modules_partial"])
+    print("Modules not assessed:", report["summary"]["modules_not_assessed"])
     print("Security findings:", len(findings))
     print("Service observations:", len(observations))
     print("Severity counts:", counts)
+    print("Security conclusion:", report["summary"]["security_conclusion"])
     print("Report:", output)
     print("Note: Results are defensive indicators, not proof of exploitable vulnerabilities.")
 
@@ -1359,6 +1367,64 @@ def interactive_menu():
         except (KeyboardInterrupt, EOFError):
             print("\nPigeon Security Toolkit closed.")
             return
+
+
+
+def build_assessment_summary(modules, findings, observations=None):
+    """Build a truthful summary of assessment coverage and findings."""
+    module_status = {}
+    completed = 0
+    failed = 0
+    partial = 0
+    not_assessed = 0
+
+    for name, data in modules.items():
+        if not isinstance(data, dict) or not data:
+            status = "not_assessed"
+        elif data.get("error"):
+            status = "failed"
+        elif data.get("status") in ("completed", "partial", "not_assessed"):
+            status = data["status"]
+        else:
+            status = "not_assessed"
+
+        module_status[name] = status
+
+        if status == "completed":
+            completed += 1
+        elif status == "failed":
+            failed += 1
+        elif status == "partial":
+            partial += 1
+        else:
+            not_assessed += 1
+
+    severity_counts = normalize_assessment_findings(findings)
+
+    if failed or not_assessed:
+        overall_status = "incomplete"
+    elif partial:
+        overall_status = "partially_completed"
+    else:
+        overall_status = "completed"
+
+    return {
+        "overall_status": overall_status,
+        "module_status": module_status,
+        "modules_completed": completed,
+        "modules_failed": failed,
+        "modules_partial": partial,
+        "modules_not_assessed": not_assessed,
+        "total_modules": len(modules),
+        "total_findings": len(findings),
+        "severity_counts": severity_counts,
+        "service_observations": len(observations or []),
+        "security_conclusion": (
+            "Findings were detected; review their evidence and severity."
+            if findings else
+            "No findings were recorded. This does not establish that the target is secure."
+        )
+    }
 
 
 def main():

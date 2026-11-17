@@ -63,6 +63,7 @@ public class MainActivity extends Activity {
     private EditText domainInput;
     private TextView output;
     private JSONObject lastScanReport;
+    private JSONObject unifiedAssessmentReport;
     private ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler splashHandler = new Handler(Looper.getMainLooper());
 
@@ -372,7 +373,179 @@ public class MainActivity extends Activity {
         addButton("VIEW SAVED SCAN", v -> promptSavedScan());
         addButton("COMPARE TWO SCANS", v -> promptCompareScans());
         section("REPORT EXPORT");
+        addButton("IMPORT UNIFIED ASSESSMENT", v -> pickUnifiedAssessment());
         addButton("GENERATE PDF REPORT", v -> generatePdfReport());
+
+        if (unifiedAssessmentReport != null) {
+            renderUnifiedAssessment();
+        }
+    }
+
+    private void renderUnifiedAssessment() {
+        JSONObject report = unifiedAssessmentReport;
+        JSONObject summary = report.optJSONObject("summary");
+        JSONObject modules = report.optJSONObject("modules");
+        JSONArray findings = report.optJSONArray("findings");
+        JSONArray observations = report.optJSONArray("service_observations");
+
+        if (summary == null || modules == null || findings == null) {
+            return;
+        }
+
+        section("UNIFIED SECURITY ASSESSMENT");
+
+        addAssessmentCard(
+                "PIGEON SECURITY TOOLKIT",
+                "PROFESSIONAL SECURITY ASSESSMENT REPORT\n"
+                + "Target: " + report.optString("target", "Unknown") + "\n"
+                + "Assessment type: " + report.optString("assessment_type", "Security assessment")
+        );
+
+        String status = summary.optString("overall_status", "unknown")
+                .replace("_", " ").toUpperCase();
+
+        addAssessmentCard(
+                "EXECUTIVE SUMMARY",
+                "OVERALL STATUS: " + status + "\n\n"
+                + "Modules completed: " + summary.optInt("modules_completed", 0)
+                + " / " + summary.optInt("total_modules", 0) + "\n"
+                + "Modules failed: " + summary.optInt("modules_failed", 0) + "\n"
+                + "Modules partial: " + summary.optInt("modules_partial", 0) + "\n"
+                + "Not assessed: " + summary.optInt("modules_not_assessed", 0) + "\n"
+                + "Total findings: " + summary.optInt("total_findings", findings.length()) + "\n"
+                + "Service observations: " + summary.optInt(
+                        "service_observations",
+                        observations == null ? 0 : observations.length()
+                ) + "\n\n"
+                + summary.optString(
+                        "security_conclusion",
+                        "Review the findings and evidence before drawing conclusions."
+                )
+        );
+
+        section("ASSESSMENT COVERAGE");
+
+        java.util.Iterator<String> moduleNames = modules.keys();
+        while (moduleNames.hasNext()) {
+            String moduleName = moduleNames.next();
+            JSONObject module = modules.optJSONObject(moduleName);
+
+            String moduleStatus = module == null
+                    ? "Unknown"
+                    : module.optString("status", "unknown");
+
+            addAssessmentCard(
+                    moduleName.replace("_", " ").toUpperCase(),
+                    "Assessment status: " + moduleStatus.replace("_", " ").toUpperCase()
+            );
+        }
+
+        section("FINDINGS BY SEVERITY");
+
+        String[] severities = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"};
+
+        for (String severity : severities) {
+            int count = 0;
+
+            for (int i = 0; i < findings.length(); i++) {
+                JSONObject finding = findings.optJSONObject(i);
+                if (finding != null && severity.equalsIgnoreCase(
+                        finding.optString("severity", "")
+                )) {
+                    count++;
+                }
+            }
+
+            if (count == 0) {
+                continue;
+            }
+
+            section(severity + " — " + count);
+
+            for (int i = 0; i < findings.length(); i++) {
+                JSONObject finding = findings.optJSONObject(i);
+
+                if (finding == null || !severity.equalsIgnoreCase(
+                        finding.optString("severity", "")
+                )) {
+                    continue;
+                }
+
+                String content =
+                        "Finding ID: " + finding.optString("id", "Not provided") + "\n"
+                        + "Module: " + finding.optString("module", "Unknown") + "\n\n"
+                        + "DETAILS\n"
+                        + finding.optString("detail", "No details supplied.") + "\n\n"
+                        + "RECOMMENDED ACTION\n"
+                        + finding.optString(
+                                "recommendation",
+                                "Further investigation is recommended."
+                        );
+
+                addAssessmentCard(
+                        finding.optString("issue", "Unnamed finding"),
+                        content
+                );
+            }
+        }
+
+        if (observations != null && observations.length() > 0) {
+            section("SERVICE OBSERVATIONS");
+
+            for (int i = 0; i < observations.length(); i++) {
+                JSONObject item = observations.optJSONObject(i);
+                if (item == null) continue;
+
+                String content =
+                        "Service: " + item.optString("service", "Unknown") + "\n"
+                        + "Port: " + item.optString("port", "Unknown") + "\n"
+                        + "State: " + item.optString("state", "Unknown") + "\n"
+                        + "Verified: " + (item.optBoolean("service_verified", false) ? "Yes" : "No") + "\n"
+                        + "Response time: " + item.optDouble("response_ms", 0) + " ms\n\n"
+                        + item.optString(
+                                "assessment_scope",
+                                "Observation scope not specified."
+                        );
+
+                addAssessmentCard("NETWORK SERVICE", content);
+            }
+        }
+
+        addAssessmentCard(
+                "REPORT INTERPRETATION",
+                "Findings describe detected conditions and configuration observations. "
+                + "They do not automatically establish exploitability. "
+                + "Service observations describe the assessed network-facing scope "
+                + "and must not be interpreted as proof of origin-server exposure."
+        );
+    }
+
+    private void addAssessmentCard(String heading, String content) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(16), dp(14), dp(16), dp(14));
+        card.setBackgroundColor(PANEL);
+
+        LinearLayout.LayoutParams cardParams =
+                new LinearLayout.LayoutParams(-1, -2);
+        cardParams.setMargins(0, dp(5), 0, dp(7));
+
+        TextView title = new TextView(this);
+        title.setText(heading);
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(13);
+        title.setTypeface(null, Typeface.BOLD);
+        title.setPadding(0, 0, 0, dp(9));
+        card.addView(title);
+
+        TextView body = new TextView(this);
+        body.setText(content);
+        body.setTextColor(SILVER);
+        body.setTextSize(12);
+        body.setLineSpacing(dp(3), 1.0f);
+        card.addView(body);
+
+        root.addView(card, cardParams);
     }
 
     private void showSettingsPage() {
@@ -1360,11 +1533,81 @@ public class MainActivity extends Activity {
             return;
         }
 
+        if (requestCode == 104 && resultCode == RESULT_OK && data != null) {
+            Uri uri = data.getData();
+            if (uri != null) {
+                importUnifiedAssessment(uri);
+            }
+            return;
+        }
+
         if (requestCode == 101 && resultCode == RESULT_OK && data != null) {
             Uri uri = data.getData();
             output.setText("Calculating SHA-256...");
             executor.execute(() -> hashFile(uri));
         }
+    }
+
+    private void pickUnifiedAssessment() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/json");
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        startActivityForResult(intent, 104);
+    }
+
+    private void importUnifiedAssessment(Uri uri) {
+        executor.execute(() -> {
+            try {
+                InputStream input = getContentResolver().openInputStream(uri);
+                if (input == null) {
+                    throw new Exception("Cannot open selected JSON file.");
+                }
+
+                java.io.ByteArrayOutputStream buffer =
+                        new java.io.ByteArrayOutputStream();
+                byte[] data = new byte[8192];
+                int count;
+
+                try (InputStream stream = input) {
+                    while ((count = stream.read(data)) != -1) {
+                        buffer.write(data, 0, count);
+                    }
+                }
+
+                JSONObject report = new JSONObject(buffer.toString("UTF-8"));
+                JSONObject modules = report.optJSONObject("modules");
+                JSONObject summary = report.optJSONObject("summary");
+                JSONArray findings = report.optJSONArray("findings");
+
+                if (!report.has("target")
+                        || !report.has("assessment_type")
+                        || modules == null
+                        || summary == null
+                        || findings == null) {
+                    throw new Exception(
+                            "Invalid assessment report. Required fields are missing."
+                    );
+                }
+
+                runOnUiThread(() -> {
+                    unifiedAssessmentReport = report;
+                    showPage(2);
+                    Toast.makeText(
+                            this,
+                            "Unified assessment imported successfully.",
+                            Toast.LENGTH_LONG
+                    ).show();
+                });
+
+            } catch (Exception e) {
+                runOnUiThread(() -> new AlertDialog.Builder(this)
+                        .setTitle("Import failed")
+                        .setMessage(e.getMessage())
+                        .setPositiveButton("OK", null)
+                        .show());
+            }
+        });
     }
 
     private void hashFile(Uri uri) {

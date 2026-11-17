@@ -25,3 +25,13 @@ pigeon_portscan_v*.py
 test.txt
 
 # Legacy package, not part of PST 1.9.1
+
+# Android and Gradle generated files
+.gradle/
+**/build/
+
+# Local source backups and patch scripts
+*.backup
+*.before-*
+*.pre-*
+connect_pst_dns.py
