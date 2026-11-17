@@ -11,6 +11,8 @@ import subprocess
 import urllib.request
 import urllib.parse
 import urllib.error
+import time
+from pst_modules.modules.traffic import TrafficRecorder
 
 from pathlib import Path
 from datetime import datetime, timezone
@@ -390,7 +392,7 @@ def inspect_cookies(headers, findings):
             )
 
 
-def audit_website(raw_url):
+def audit_website(raw_url, response_capture=None, traffic_recorder=None):
     try:
         url = validate_url(raw_url)
     except ValueError as error:
@@ -412,6 +414,7 @@ def audit_website(raw_url):
         method="GET"
     )
 
+    request_started = time.perf_counter()
     try:
         try:
             response = urllib.request.urlopen(
@@ -426,8 +429,28 @@ def audit_website(raw_url):
         final_url = response.geturl()
         headers = response.headers
 
-        # Read only a small amount of the response body.
-        response.read(4096)
+        # Read only a small response sample for passive inspection.
+        body_sample = response.read(4096)
+
+        if response_capture is not None:
+            response_capture["final_url"] = final_url
+            response_capture["http_status"] = status
+            response_capture["content_type"] = headers.get("Content-Type", "")
+            response_capture["body"] = body_sample.decode(
+                "utf-8", errors="replace"
+            )
+
+        if traffic_recorder is not None:
+            duration_ms = (time.perf_counter() - request_started) * 1000
+            traffic_recorder.record_http(
+                method="GET",
+                url=final_url,
+                status_code=status,
+                duration_ms=round(duration_ms, 2),
+                bytes_received=len(body_sample),
+                headers=headers,
+            )
+
         response.close()
 
     except urllib.error.URLError as error:
@@ -836,6 +859,7 @@ def unified_assessment(raw_domain, options):
     import json
     import subprocess
     import sys
+    from pst_modules.modules.injection import inspect_input_surface
 
     if "--authorized" not in options:
         print("Permission required. Use --authorized only on systems you own or have permission to assess.")
@@ -856,6 +880,7 @@ def unified_assessment(raw_domain, options):
 
     findings = []
     observations = []
+    traffic_recorder = TrafficRecorder()
 
     report = {
         "tool": "Pigeon Security Toolkit",
@@ -873,7 +898,7 @@ def unified_assessment(raw_domain, options):
     print("Target:", domain)
 
     # DNS
-    print("\n[1/4] DNS and email security inspection")
+    print("\n[1/5] DNS and email security inspection")
 
     dns = {}
     try:
@@ -881,6 +906,16 @@ def unified_assessment(raw_domain, options):
             result = dns_query(domain, record_type)
             answers = result.get("Answer", []) if isinstance(result, dict) else []
             dns[record_type] = answers
+
+        # Record DNS metadata from the answers already retrieved.
+        resolved_addresses = []
+        for record_type in ("A", "AAAA"):
+            for answer in dns.get(record_type, []):
+                address = answer.get("data", "")
+                if address:
+                    resolved_addresses.append(address)
+
+        traffic_recorder.record_dns(domain, resolved_addresses)
 
         dns["status"] = "completed"
         report["modules"]["dns"] = dns
@@ -993,21 +1028,45 @@ def unified_assessment(raw_domain, options):
         print("DNS inspection error:", exc)
 
     # Website
-    print("\n[2/4] Website security audit")
+    print("\n[2/5] Website security audit")
 
     website_path = BASE_DIR / "pigeon-website-audit.json"
+    website_response = {}
 
     try:
         if website_path.exists():
             website_path.unlink()
 
         with contextlib.redirect_stdout(io.StringIO()):
-            audit_website("https://" + domain)
+            audit_website(
+                "https://" + domain,
+                response_capture=website_response,
+                traffic_recorder=traffic_recorder,
+            )
 
         if website_path.exists():
             website = json.loads(website_path.read_text())
             website["status"] = "completed"
             report["modules"]["website"] = website
+
+            # Passive injection and input-surface inspection.
+            content_type = website_response.get("content_type", "")
+            if "html" in content_type.lower():
+                injection = inspect_input_surface(
+                    website_response.get("final_url", "https://" + domain),
+                    website_response.get("body", ""),
+                    content_type
+                )
+                report["modules"]["injection"] = injection
+                findings.extend(injection.get("findings", []))
+                print("Passive injection inspection completed.")
+            else:
+                report["modules"]["injection"] = {
+                    "status": "not_assessed",
+                    "reason": "The website response was not identified as HTML.",
+                    "requests_sent": 0,
+                    "active_probing": False
+                }
 
             recommendations = {
                 "Missing Content-Security-Policy":
@@ -1043,13 +1102,15 @@ def unified_assessment(raw_domain, options):
             report["modules"]["website"] = {
                 "error": "Website audit report was not created."
             }
+            report["modules"]["injection"] = {"status": "not_assessed"}
 
     except Exception as exc:
         report["modules"]["website"] = {"error": str(exc)}
+        report["modules"]["injection"] = {"status": "not_assessed"}
         print("Website audit error:", exc)
 
     # SSL
-    print("\n[3/4] SSL/TLS inspection")
+    print("\n[4/5] SSL/TLS inspection")
 
     ssl_path = BASE_DIR / "pigeon-ssl-report.json"
 
@@ -1113,7 +1174,7 @@ def unified_assessment(raw_domain, options):
         print("SSL inspection error:", exc)
 
     # Port inspection
-    print("\n[4/4] Authorized port inspection")
+    print("\n[5/5] Authorized port inspection")
 
     port_path = BASE_DIR / "pigeon-assessment-ports.json"
     html_path = BASE_DIR / "pigeon-assessment-ports.html"
@@ -1217,6 +1278,8 @@ def unified_assessment(raw_domain, options):
     except Exception as exc:
         report["modules"]["portscan"] = {"error": str(exc)}
         print("Port inspection error:", exc)
+
+    report["modules"]["traffic"] = traffic_recorder.export()
 
     report["summary"] = build_assessment_summary(
         report["modules"], findings, observations

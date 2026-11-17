@@ -322,6 +322,123 @@ def risk_assessment(port, service, verified):
     }
 
 
+
+
+def identify_service_version(service, banner):
+    """Extract product/version only from explicit, recognizable banners."""
+    import re
+
+    result = {
+        "product": None,
+        "version": None,
+        "version_source": None
+    }
+
+    if not banner:
+        return result
+
+    patterns = {
+        "SSH": [
+            (r"OpenSSH[_ ]([0-9][A-Za-z0-9._p-]*)", "OpenSSH"),
+        ],
+        "FTP": [
+            (r"vsFTPd\s+([0-9][A-Za-z0-9._-]*)", "vsFTPd"),
+            (r"ProFTPD\s+([0-9][A-Za-z0-9._-]*)", "ProFTPD"),
+        ],
+        "SMTP": [
+            (r"Exim\s+([0-9][A-Za-z0-9._-]*)", "Exim"),
+        ],
+    }
+
+    for pattern, product in patterns.get(service, []):
+        match = re.search(pattern, banner, re.IGNORECASE)
+        if match:
+            result.update({
+                "product": product,
+                "version": match.group(1),
+                "version_source": "service_banner"
+            })
+            break
+
+    return result
+
+def assess_exploitability(port, service, verified, banner=None, tls=None):
+    """
+    Conservative, non-invasive exploitability assessment.
+    Does not execute exploits or infer vulnerabilities from open ports alone.
+    """
+    result = {
+        "status": "UNDETERMINED",
+        "confidence": "LOW",
+        "evidence": [],
+        "cve_matches": [],
+        "exploitation_attempted": False,
+        "reason": "An open port or service identification alone cannot confirm a vulnerability.",
+        "recommendation": "Identify the exact product and version, review vendor advisories, and validate safely."
+    }
+
+    if not verified:
+        result["evidence"].append("Service identity has not been verified.")
+        return result
+
+    result["evidence"].append(f"Recognized service: {service}")
+
+    if banner:
+        result["evidence"].append("A service response banner was observed.")
+        result["banner"] = str(banner)[:300]
+
+    if tls:
+        result["evidence"].append("TLS handshake metadata was observed.")
+        result["tls_version"] = tls.get("version")
+        result["tls_cipher"] = tls.get("cipher")
+
+    result["reason"] = (
+        "The service was identified, but no exact software product/version "
+        "has yet been verified against vulnerability intelligence."
+    )
+    result["recommendation"] = (
+        "Obtain reliable product/version evidence and compare it with vendor "
+        "security advisories or a trusted CVE database."
+    )
+
+    if service in ("TELNET", "FTP"):
+        result["status"] = "EXPOSURE_CONCERN"
+        result["confidence"] = "MEDIUM"
+        result["reason"] = (
+            "The identified protocol may expose credentials or traffic "
+            "without modern transport encryption."
+        )
+        result["recommendation"] = (
+            "Disable the service if unnecessary. Prefer SSH, SFTP or properly "
+            "configured encrypted alternatives."
+        )
+
+    elif service in ("MYSQL", "POSTGRESQL", "MSSQL", "REDIS", "ELASTICSEARCH"):
+        result["status"] = "EXPOSURE_CONCERN"
+        result["confidence"] = "MEDIUM"
+        result["reason"] = (
+            "A database or data service is reachable. Reachability does not "
+            "prove weak authentication or unauthorized data access."
+        )
+        result["recommendation"] = (
+            "Restrict network access, verify authentication and authorization, "
+            "and check the installed version against vendor advisories."
+        )
+
+    elif service in ("SMB", "RDP", "VNC"):
+        result["status"] = "EXPOSURE_CONCERN"
+        result["confidence"] = "MEDIUM"
+        result["reason"] = (
+            "A remote access or file-sharing service is reachable and may "
+            "increase attack surface."
+        )
+        result["recommendation"] = (
+            "Restrict access to trusted networks or VPN and verify patch level "
+            "and authentication controls."
+        )
+
+    return result
+
 def inspect_port(ip, port, timeout, target):
     start = time.perf_counter()
     item = {
@@ -332,6 +449,9 @@ def inspect_port(ip, port, timeout, target):
         "banner": None,
         "protocol_detail": None,
         "tls": None,
+        "product": None,
+        "version": None,
+        "version_source": None,
         "response_ms": None,
         "risk": None,
         "error": None
@@ -353,6 +473,10 @@ def inspect_port(ip, port, timeout, target):
             item["banner"] = fingerprint["banner"]
             item["protocol_detail"] = fingerprint["protocol_detail"]
             item["tls"] = fingerprint["tls"]
+            version_info = identify_service_version(
+                item["service"], item["banner"]
+            )
+            item.update(version_info)
 
     except ConnectionRefusedError:
         item["state"] = "CLOSED"
@@ -369,6 +493,22 @@ def inspect_port(ip, port, timeout, target):
         item["risk"] = risk_assessment(
             port, item["service"], item["service_verified"]
         )
+        item["exploitability"] = assess_exploitability(
+            port,
+            item["service"],
+            item["service_verified"],
+            item["banner"],
+            item["tls"]
+        )
+    else:
+        item["exploitability"] = {
+            "status": "NOT_APPLICABLE",
+            "confidence": "NONE",
+            "evidence": [],
+            "cve_matches": [],
+            "exploitation_attempted": False,
+            "reason": "The port was not observed open."
+        }
 
     if item["response_ms"] is None and item["state"] in ("CLOSED", "ERROR"):
         item["response_ms"] = round(
@@ -417,6 +557,18 @@ def save_html(report, filename):
 
     for item in report["results"]:
         risk = item.get("risk") or {}
+        exploit = item.get("exploitability") or {}
+        evidence = "; ".join(exploit.get("evidence", []))
+        cve = item.get("cve_intelligence") or {}
+        cve_ids = ", ".join(
+            match.get("id", "")
+            for match in cve.get("matches", [])
+        )
+        cve_display = (
+            cve_ids if cve_ids
+            else cve.get("status", "NOT_CHECKED")
+        )
+
         rows.append(
             "<tr>"
             f"<td>{item['port']}</td>"
@@ -425,8 +577,12 @@ def save_html(report, filename):
             f"<td>{'Yes' if item['service_verified'] else 'No'}</td>"
             f"<td>{html.escape(str(item['response_ms']))} ms</td>"
             f"<td>{html.escape(str(risk.get('level', '-')))}</td>"
+            f"<td>{html.escape(str(exploit.get('status', 'NOT_ASSESSED')))}</td>"
+            f"<td>{html.escape(str(exploit.get('confidence', '-')))}</td>"
+            f"<td>{html.escape(evidence)}</td>"
             f"<td>{html.escape(str(risk.get('reason', '-')))}</td>"
-            f"<td>{html.escape(str(risk.get('action', '-')))}</td>"
+            f"<td>{html.escape(str(exploit.get('recommendation', risk.get('action', '-'))))}</td>"
+            f"<td>{html.escape(cve_display)}</td>"
             "</tr>"
         )
 
@@ -467,7 +623,8 @@ Errors: {summary['ERROR']}</p>
 <table>
 <thead><tr>
 <th>Port</th><th>State</th><th>Service</th><th>Verified</th>
-<th>Response</th><th>Risk</th><th>Reason</th><th>Recommended action</th>
+<th>Response</th><th>Exposure risk</th><th>Exploitability</th>
+<th>Confidence</th><th>Evidence</th><th>Reason</th><th>Recommended action</th><th>CVE intelligence</th>
 </tr></thead>
 <tbody>{''.join(rows)}</tbody>
 </table>
@@ -495,11 +652,33 @@ def print_report(report):
 
         verified = "VERIFIED" if item["service_verified"] else "HINT ONLY"
         risk = item["risk"] or {}
+        exploit = item.get("exploitability") or {}
         print(
             f"{item['port']:5}  {item['service']:<16} "
             f"OPEN  {verified:<10} "
-            f"{item['response_ms']} ms  RISK: {risk.get('level', '-')}"
+            f"{item['response_ms']} ms  "
+            f"RISK: {risk.get('level', '-')}  "
+            f"EXPLOITABILITY: {exploit.get('status', 'NOT_ASSESSED')}"
         )
+        cve = item.get("cve_intelligence") or {}
+        if cve:
+            print(f"       CVE intelligence: {cve.get('status')}")
+            for match in cve.get("matches", []):
+                print(
+                    f"       {match.get('id')} | "
+                    f"CVSS: {match.get('cvss_score')} | "
+                    f"{match.get('severity')}"
+                )
+
+        if exploit:
+            print(
+                f"       Exploitability confidence: "
+                f"{exploit.get('confidence', '-')}"
+            )
+            print(
+                f"       Exploitability reason: "
+                f"{exploit.get('reason', '-')}"
+            )
 
         if item["banner"]:
             print(f"       Response: {item['banner'][:150]}")
@@ -533,6 +712,7 @@ def main():
     )
     parser.add_argument("--timeout", type=float, default=1.5)
     parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--cve-check", action="store_true", help="Enable optional NVD CVE intelligence lookups")
     parser.add_argument("--output", default="pigeon-scan.json")
     parser.add_argument("--html", default="pigeon-report.html")
     parser.add_argument(
@@ -604,6 +784,52 @@ def main():
                     "risk": None,
                     "error": str(exc)[:200]
                 })
+
+
+    if args.cve_check:
+        from pst_modules.modules.cve_intel import lookup_cves
+
+        print("\nOptional NVD CVE intelligence enabled.")
+        lookup_cache = {}
+
+        for item in results:
+            if item.get("state") != "OPEN":
+                continue
+
+            product = item.get("product")
+            version = item.get("version")
+
+            if not product or not version:
+                continue
+
+            cache_key = (product, version)
+
+            if cache_key not in lookup_cache:
+                print(f"Checking NVD: {product} {version}")
+                lookup_cache[cache_key] = lookup_cves(product, version)
+
+            cve_result = lookup_cache[cache_key]
+            item["cve_intelligence"] = cve_result
+
+            exploit = item.setdefault("exploitability", {})
+            exploit["cve_matches"] = [
+                match.get("id")
+                for match in cve_result.get("matches", [])
+                if match.get("id")
+            ]
+
+            if cve_result["status"] == "POTENTIAL_CVE_MATCH":
+                exploit["status"] = "POTENTIAL_CVE_MATCH"
+                exploit["confidence"] = "REVIEW_REQUIRED"
+                exploit["reason"] = (
+                    "NVD returned potential product/version CVE matches. "
+                    "Applicability must be independently verified."
+                )
+                exploit["recommendation"] = (
+                    "Review each CVE, vendor advisory and installed "
+                    "package version. Do not treat a database match "
+                    "as proof of exploitability."
+                )
 
     results.sort(key=lambda item: item["port"])
     report = build_report(
